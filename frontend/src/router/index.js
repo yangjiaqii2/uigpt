@@ -50,6 +50,12 @@ const router = createRouter({
           meta: { requiresAuth: true, requiresAdmin: true },
         },
         {
+          path: 'admin/site-mail',
+          name: 'admin-site-mail',
+          component: () => import('../views/AdminSiteMailView.vue'),
+          meta: { requiresAuth: true, requiresAdmin: true },
+        },
+        {
           path: 'history',
           name: 'history',
           component: () => import('../views/HistoryView.vue'),

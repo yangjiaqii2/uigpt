@@ -10,6 +10,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { fetchRegisterCaptcha, fetchRegisterOptions } from '../api/auth'
 import { getAxiosErrorMessage } from '../utils/httpError'
+import LegalGlassModal from '../components/legal/LegalGlassModal.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -21,6 +22,8 @@ const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const captchaCode = ref('')
+const agreeLegal = ref(false)
+const legalModal = ref(null)
 
 const CN_PHONE = /^1[3-9]\d{9}$/
 
@@ -40,6 +43,7 @@ const fieldErrors = reactive({
   password: '',
   confirmPassword: '',
   captcha: '',
+  agreeLegal: '',
 })
 
 const focus = reactive({
@@ -70,6 +74,17 @@ watch(confirmPassword, () => {
 watch(captchaCode, (v) => {
   if (fieldErrors.captcha && v.trim().length > 0) fieldErrors.captcha = ''
 })
+watch(agreeLegal, (v) => {
+  if (v) fieldErrors.agreeLegal = ''
+})
+
+function openLegal(kind) {
+  legalModal.value = kind
+}
+
+function onLegalModalOpen(v) {
+  if (!v) legalModal.value = null
+}
 
 async function refreshCaptcha() {
   try {
@@ -131,6 +146,7 @@ function validateClient() {
   fieldErrors.password = ''
   fieldErrors.confirmPassword = ''
   fieldErrors.captcha = ''
+  fieldErrors.agreeLegal = ''
   let ok = true
   if (!realName.value.trim()) {
     fieldErrors.realName = '请填写姓名'
@@ -156,6 +172,10 @@ function validateClient() {
   }
   if (!captchaCode.value.trim()) {
     fieldErrors.captcha = '请输入图形验证码'
+    ok = false
+  }
+  if (!agreeLegal.value) {
+    fieldErrors.agreeLegal = '请阅读并勾选同意《用户协议》与《隐私政策》'
     ok = false
   }
   return ok
@@ -491,6 +511,19 @@ async function onSubmit() {
               </div>
             </div>
 
+            <div class="reg-agree reg-card-enter reg-card-enter--d7">
+              <label class="reg-agree-label" :class="{ 'reg-agree-label--error': Boolean(fieldErrors.agreeLegal) }">
+                <input v-model="agreeLegal" type="checkbox" class="reg-agree-cb" />
+                <span class="reg-agree-txt">
+                  我已阅读并同意
+                  <button type="button" class="reg-agree-link" @click.prevent="openLegal('terms')">《用户协议》</button>
+                  与
+                  <button type="button" class="reg-agree-link" @click.prevent="openLegal('privacy')">《隐私政策》</button>
+                </span>
+              </label>
+              <p v-if="fieldErrors.agreeLegal" class="float-hint float-hint--err reg-agree-err">{{ fieldErrors.agreeLegal }}</p>
+            </div>
+
             <div v-if="recaptchaSiteKey" class="reg-recaptcha-note reg-card-enter reg-card-enter--d8">
               <p class="reg-recaptcha-note-title">Google reCAPTCHA v3</p>
               <p class="reg-recaptcha-note-body">
@@ -498,7 +531,11 @@ async function onSubmit() {
               </p>
             </div>
 
-            <button type="submit" class="reg-submit reg-card-enter reg-card-enter--d9" :disabled="loading">
+            <button
+              type="submit"
+              class="reg-submit reg-card-enter reg-card-enter--d9"
+              :disabled="loading || !agreeLegal"
+            >
               <span class="reg-submit-shine" aria-hidden="true" />
               <span class="reg-submit-inner">
                 <span class="reg-submit-text" :class="{ 'reg-submit-text--hide': loading }">
@@ -525,6 +562,12 @@ async function onSubmit() {
         </div>
       </main>
     </div>
+
+    <LegalGlassModal
+      :open="legalModal !== null"
+      :kind="legalModal"
+      @update:open="onLegalModalOpen"
+    />
   </div>
 </template>
 
@@ -1044,6 +1087,57 @@ html:not([data-theme]) .reg-cap-img-wrap {
 
 .reg-captcha-row--error .reg-cap-img-wrap {
   box-shadow: 0 0 0 2px var(--reg-error-border);
+}
+
+.reg-agree {
+  margin-top: -0.25rem;
+}
+
+.reg-agree-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.reg-agree-label--error .reg-agree-txt {
+  color: var(--text);
+}
+
+.reg-agree-cb {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--reg-accent);
+  cursor: pointer;
+}
+
+.reg-agree-txt {
+  user-select: none;
+}
+
+.reg-agree-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  color: var(--reg-accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.reg-agree-link:hover {
+  color: color-mix(in srgb, var(--reg-accent) 85%, #6366f1);
+}
+
+.reg-agree-err {
+  margin: 0.4rem 0 0 26px;
 }
 
 .reg-recaptcha-note {

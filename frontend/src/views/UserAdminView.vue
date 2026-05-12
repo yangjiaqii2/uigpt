@@ -25,6 +25,56 @@ const filterCreatedTo = ref('')
 /** 全部 ''；否则 '0'|'1'|'2' */
 const filterPrivilege = ref('')
 
+const ROLE_FILTER_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: '0', label: '普通' },
+  { value: '1', label: '付费' },
+  { value: '2', label: '超级管理' },
+]
+
+const roleMenuOpen = ref(false)
+/** @type {import('vue').Ref<HTMLElement | null>} */
+const roleFilterRootRef = ref(null)
+
+const roleFilterLabel = computed(() => {
+  const v = filterPrivilege.value
+  return ROLE_FILTER_OPTIONS.find((o) => o.value === v)?.label ?? '全部'
+})
+
+function toggleRoleMenu() {
+  roleMenuOpen.value = !roleMenuOpen.value
+}
+
+function selectRoleFilter(value) {
+  filterPrivilege.value = value
+  roleMenuOpen.value = false
+}
+
+function onRoleMenuDocClick(e) {
+  const root = roleFilterRootRef.value
+  if (!roleMenuOpen.value || !root) return
+  const t = e.target
+  if (t instanceof Node && root.contains(t)) return
+  roleMenuOpen.value = false
+}
+
+function onRoleMenuKeydown(e) {
+  if (e.key === 'Escape') roleMenuOpen.value = false
+}
+
+watch(roleMenuOpen, (open) => {
+  if (open) {
+    nextTick(() => {
+      if (!roleMenuOpen.value) return
+      document.addEventListener('click', onRoleMenuDocClick, true)
+      document.addEventListener('keydown', onRoleMenuKeydown, true)
+    })
+  } else {
+    document.removeEventListener('click', onRoleMenuDocClick, true)
+    document.removeEventListener('keydown', onRoleMenuKeydown, true)
+  }
+})
+
 const modalOpen = ref(false)
 const modalMode = ref('create') // 'create' | 'edit'
 /** @type {import('vue').Ref<Record<string, unknown> | null>} */
@@ -414,6 +464,8 @@ watch(modalOpen, (o) => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onGlobalKeydown)
+  document.removeEventListener('click', onRoleMenuDocClick, true)
+  document.removeEventListener('keydown', onRoleMenuKeydown, true)
   document.body.style.overflow = ''
   if (deleteCooldownTimer) window.clearTimeout(deleteCooldownTimer)
 })
@@ -468,14 +520,41 @@ void load()
           <span class="adm-filter-label">注册至</span>
           <input v-model="filterCreatedTo" class="adm-filter-input adm-filter-input--date" type="date" />
         </label>
-        <label class="adm-filter-field">
+        <label class="adm-filter-field adm-filter-field--role">
           <span class="adm-filter-label">角色</span>
-          <select v-model="filterPrivilege" class="adm-filter-select">
-            <option value="">全部</option>
-            <option value="0">普通</option>
-            <option value="1">付费</option>
-            <option value="2">超级管理</option>
-          </select>
+          <div ref="roleFilterRootRef" class="adm-role-glass-wrap">
+            <button
+              type="button"
+              class="adm-role-glass-trigger"
+              :class="{ 'adm-role-glass-trigger--open': roleMenuOpen }"
+              :aria-expanded="roleMenuOpen"
+              aria-haspopup="listbox"
+              @click.stop="toggleRoleMenu"
+            >
+              <span class="adm-role-glass-value">{{ roleFilterLabel }}</span>
+              <span class="adm-role-glass-chev" aria-hidden="true" />
+            </button>
+            <Transition name="adm-role-pop">
+              <ul
+                v-show="roleMenuOpen"
+                class="adm-role-glass-list"
+                role="listbox"
+                aria-label="按角色筛选"
+              >
+                <li
+                  v-for="o in ROLE_FILTER_OPTIONS"
+                  :key="'role-opt-' + o.value"
+                  role="option"
+                  :aria-selected="filterPrivilege === o.value"
+                  class="adm-role-glass-item"
+                  :class="{ 'adm-role-glass-item--active': filterPrivilege === o.value }"
+                  @click.stop="selectRoleFilter(o.value)"
+                >
+                  {{ o.label }}
+                </li>
+              </ul>
+            </Transition>
+          </div>
         </label>
         <div class="adm-filter-actions">
           <button type="button" class="adm-btn adm-btn--primary" :disabled="loading || saving" @click="applySearch">
@@ -955,8 +1034,8 @@ void load()
   flex: 1 1 120px;
 }
 
-.adm-filter-field:has(.adm-filter-select) {
-  flex: 0 1 132px;
+.adm-filter-field--role {
+  flex: 0 1 148px;
 }
 
 .adm-filter-field:has(.adm-filter-input--date) {
@@ -970,8 +1049,7 @@ void load()
   letter-spacing: 0.02em;
 }
 
-.adm-filter-input,
-.adm-filter-select {
+.adm-filter-input {
   min-height: 36px;
   padding: 6px 10px;
   border-radius: 8px;
@@ -983,8 +1061,7 @@ void load()
   box-sizing: border-box;
 }
 
-.adm-filter-input:focus,
-.adm-filter-select:focus {
+.adm-filter-input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--chat-link-accent-fg, #6366f1) 55%, transparent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--chat-link-accent-fg, #6366f1) 18%, transparent);
@@ -994,19 +1071,133 @@ void load()
   min-width: 0;
 }
 
-.adm-filter-select {
+/* 角色筛选：毛玻璃自定义下拉 */
+.adm-role-glass-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.adm-role-glass-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #fff 14%, var(--chat-border, #2f3542));
+  background: color-mix(in srgb, var(--chat-panel, #1a1f2e) 52%, transparent);
+  backdrop-filter: blur(16px) saturate(165%);
+  -webkit-backdrop-filter: blur(16px) saturate(165%);
+  box-shadow:
+    0 2px 14px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent);
+  color: var(--chat-fg-strong, #fff);
+  font-size: 0.8125rem;
+  font-weight: 500;
   cursor: pointer;
-  appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--chat-muted, #9aa3b2) 50%),
-    linear-gradient(135deg, var(--chat-muted, #9aa3b2) 50%, transparent 50%);
-  background-position:
-    calc(100% - 16px) calc(50% - 3px),
-    calc(100% - 11px) calc(50% - 3px);
-  background-size:
-    5px 5px,
-    5px 5px;
-  background-repeat: no-repeat;
-  padding-right: 28px;
+  box-sizing: border-box;
+  text-align: left;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.adm-role-glass-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent, #5ee1d5) 35%, var(--chat-border, #2f3542));
+  background: color-mix(in srgb, var(--chat-panel, #1a1f2e) 42%, transparent);
+}
+
+.adm-role-glass-trigger:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--chat-link-accent-fg, #6366f1) 55%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--chat-link-accent-fg, #6366f1) 22%, transparent),
+    0 2px 14px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent);
+}
+
+.adm-role-glass-trigger--open {
+  border-color: color-mix(in srgb, var(--accent, #5ee1d5) 45%, var(--chat-border, #2f3542));
+}
+
+.adm-role-glass-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adm-role-glass-chev {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--chat-muted, #9aa3b2);
+  margin-top: 2px;
+  transition: transform 0.2s ease;
+}
+
+.adm-role-glass-trigger--open .adm-role-glass-chev {
+  transform: rotate(180deg);
+}
+
+.adm-role-glass-list {
+  position: absolute;
+  z-index: 60;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, #fff 12%, var(--chat-border, #2f3542));
+  background: color-mix(in srgb, var(--chat-panel, #1a1f2e) 38%, transparent);
+  backdrop-filter: blur(22px) saturate(190%);
+  -webkit-backdrop-filter: blur(22px) saturate(190%);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.38),
+    0 0 0 1px color-mix(in srgb, #fff 5%, transparent) inset;
+}
+
+.adm-role-glass-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  color: var(--chat-fg, #e8eaed);
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease;
+}
+
+.adm-role-glass-item:hover {
+  background: color-mix(in srgb, var(--accent, #5ee1d5) 14%, transparent);
+  color: var(--chat-fg-strong, #fff);
+}
+
+.adm-role-glass-item--active {
+  font-weight: 650;
+  background: color-mix(in srgb, var(--accent, #5ee1d5) 10%, transparent);
+  color: var(--accent, #5ee1d5);
+}
+
+.adm-role-pop-enter-active,
+.adm-role-pop-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.adm-role-pop-enter-from,
+.adm-role-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .adm-filter-actions {

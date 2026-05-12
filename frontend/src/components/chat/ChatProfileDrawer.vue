@@ -2,14 +2,24 @@
 /**
  * 个人中心：右侧玻璃抽屉 + 密码模态框（深色 AI 创作工具风格）
  */
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { fetchMeStats } from '../../api/meProfile'
 import { changePassword as apiChangePassword } from '../../api/auth'
 import { getAxiosErrorMessage } from '../../utils/httpError'
+import LegalGlassModal from '../legal/LegalGlassModal.vue'
+import { useSiteMailStore } from '../../stores/siteMail'
 
-const APP_VERSION = '1.2.0'
+const siteMailStore = useSiteMailStore()
+
+/** 构建时注入：package.json 的 version，或环境变量 VITE_APP_VERSION（如 CI / Docker 传镜像 tag） */
+const displayAppVersion = computed(() => {
+  const raw = String(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0')
+  return raw.startsWith('v') ? raw : `v${raw}`
+})
+
+const legalModal = ref(null)
 
 const auth = useAuthStore()
 
@@ -17,6 +27,7 @@ const props = defineProps({
   open: { type: Boolean, default: false },
   isAuthenticated: { type: Boolean, default: false },
   username: { type: String, default: '' },
+  isAdmin: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:open', 'logout', 'open-conversation'])
@@ -35,12 +46,26 @@ const pwdSubmitting = ref(false)
 function close() {
   emit('update:open', false)
   pwdModalOpen.value = false
+  legalModal.value = null
 }
 
 function openPwdModal() {
   pwdModalOpen.value = true
   pwdError.value = ''
   pwdOk.value = ''
+}
+
+function openLegal(kind) {
+  legalModal.value = kind
+}
+
+function closeLegal() {
+  legalModal.value = null
+}
+
+function openSiteMailCompose() {
+  siteMailStore.openCompose()
+  close()
 }
 
 function closePwdModal() {
@@ -178,6 +203,23 @@ defineExpose({
                     <span class="pp-menu-chev">›</span>
                   </button>
 
+                  <button
+                    v-if="!isAdmin"
+                    type="button"
+                    class="pp-menu-row"
+                    @click="openSiteMailCompose"
+                  >
+                    <span class="pp-menu-ic" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <path d="M4 4h16v12H4V4z" stroke-linejoin="round" />
+                        <path d="m22 16-4 4v-4h4z" stroke-linejoin="round" />
+                        <path d="M8 9h8M8 12h5" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="pp-menu-txt">联系管理员</span>
+                    <span class="pp-menu-chev">›</span>
+                  </button>
+
                   <button type="button" class="pp-menu-row pp-menu-row--danger" @click="emit('logout'); close()">
                     <span class="pp-menu-ic pp-menu-ic--danger" aria-hidden="true">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -207,11 +249,11 @@ defineExpose({
               </section>
 
               <footer class="pp-footer">
-                <span class="pp-ver">v{{ APP_VERSION }}</span>
+                <span class="pp-ver pp-ver-tag" :title="`当前版本 ${displayAppVersion}`">{{ displayAppVersion }}</span>
                 <span class="pp-footer-links">
-                  <a href="#" class="pp-footer-a" @click.prevent>隐私政策</a>
+                  <button type="button" class="pp-footer-a" @click="openLegal('privacy')">隐私政策</button>
                   <span class="pp-footer-dot">·</span>
-                  <a href="#" class="pp-footer-a" @click.prevent>用户协议</a>
+                  <button type="button" class="pp-footer-a" @click="openLegal('terms')">用户协议</button>
                 </span>
               </footer>
             </div>
@@ -268,6 +310,12 @@ defineExpose({
       </div>
     </Transition>
   </Teleport>
+
+  <LegalGlassModal
+    :open="legalModal !== null"
+    :kind="legalModal"
+    @update:open="(v) => { if (!v) closeLegal() }"
+  />
 </template>
 
 <style scoped>
@@ -641,12 +689,31 @@ defineExpose({
   color: var(--chat-muted-4);
 }
 
+.pp-ver-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--chat-muted-2);
+  background: color-mix(in srgb, var(--chat-profile-bg) 88%, transparent);
+  border: 1px solid var(--chat-toolbar-divider);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
 .pp-footer-links {
   font-size: 0.6875rem;
   color: var(--chat-muted-4);
 }
 
 .pp-footer-a {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
   color: inherit;
   text-decoration: none;
   transition: color 0.15s;
@@ -654,6 +721,8 @@ defineExpose({
 
 .pp-footer-a:hover {
   color: var(--chat-muted-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .pp-footer-dot {

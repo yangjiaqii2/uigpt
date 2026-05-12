@@ -10,6 +10,7 @@ import ChatEmptyState from '../components/chat/ChatEmptyState.vue'
 import ChatGenImageCard from '../components/chat/ChatGenImageCard.vue'
 import ChatConversationInpaintOverlay from '../components/chat/ChatConversationInpaintOverlay.vue'
 import ChatProfileDrawer from '../components/chat/ChatProfileDrawer.vue'
+import SiteMailBell from '../components/site-mail/SiteMailBell.vue'
 import ChatSessionTimeline from '../components/chat/ChatSessionTimeline.vue'
 import { findSkillById } from '../constants/chatSkills'
 import {
@@ -37,7 +38,6 @@ import { chatTurnPointsCost } from '../constants/pointCosts'
 
 const STORAGE_FAST_FREEFORM_MODEL = 'uigpt_fast_freeform_model_v1'
 const STORAGE_FAST_FREEFORM_DEEP = 'uigpt_fast_freeform_deep_reasoning_v1'
-const STORAGE_RAG_USE = 'uigpt_rag_use_v1'
 
 function readFastFreeformModelPref() {
   try {
@@ -61,16 +61,6 @@ function readFastFreeformDeepPref() {
   return true
 }
 
-function readRagUsePref() {
-  try {
-    if (typeof localStorage === 'undefined') return false
-    return localStorage.getItem(STORAGE_RAG_USE) === '1'
-  } catch {
-    /* ignore */
-  }
-  return false
-}
-
 /** 稳定 key，供 TransitionGroup 与列表 diff */
 let msgUid = 0
 
@@ -84,35 +74,6 @@ const fastFreeformModelId = ref(readFastFreeformModelPref())
 
 /** 深度推理（更强推理路由；持久化） */
 const freeformDeepReasoning = ref(readFastFreeformDeepPref())
-
-/** 透传模式下是否请求服务端知识库（RAG）；非透传由服务端自动检索 */
-const ragUseKnowledge = ref(readRagUsePref())
-
-watch(
-  () => auth.isSuperAdmin,
-  (ok) => {
-    if (ok) return
-    ragUseKnowledge.value = false
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem(STORAGE_RAG_USE)
-      }
-    } catch {
-      /* ignore */
-    }
-  },
-  { immediate: true },
-)
-
-watch(ragUseKnowledge, (v) => {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(STORAGE_RAG_USE, v ? '1' : '0')
-    }
-  } catch {
-    /* ignore */
-  }
-})
 
 /** 生成接口在 JSON 中返回 `b64_json` 时优先拼 data URL；历史列表仍仅有 imageUrl */
 function displayUrlFromConversationImagePayload(data) {
@@ -332,7 +293,9 @@ function onDocClick(e) {
     e.target.closest?.('.cvi-backdrop') ||
     e.target.closest?.('.sb-ctx-menu') ||
     e.target.closest?.('.srl-ctx') ||
-    e.target.closest?.('.delconv-shell')
+    e.target.closest?.('.delconv-shell') ||
+    e.target.closest?.('.site-mail-wrap') ||
+    e.target.closest?.('.sm-shell')
   ) {
     return
   }
@@ -948,7 +911,6 @@ async function send() {
       })
       if (freeformDeepSnapshot) streamExtras.deepReasoning = true
     }
-    if (ragUseKnowledge.value) streamExtras.useRag = true
     await streamChat(
       payload,
       auth.isAuthenticated ? conversationId.value : undefined,
@@ -1042,15 +1004,8 @@ function onConversationDeletedActive() {
           </button>
         </div>
         <div class="ds-topbar-trailing">
+          <SiteMailBell />
           <span v-if="auth.isAuthenticated" class="ds-points-chip" title="当前可用积分">积分 {{ auth.points }}</span>
-          <label
-            v-if="auth.isSuperAdmin"
-            class="ds-rag-toggle"
-            title="开启后本机请求会带上知识库检索（需服务端配置 Qdrant 与 embedding）"
-          >
-            <input v-model="ragUseKnowledge" type="checkbox" class="ds-rag-toggle-input" />
-            <span class="ds-rag-toggle-label">知识库</span>
-          </label>
           <div ref="profileWrapRef" class="ds-profile-wrap">
             <button
               type="button"
@@ -1068,6 +1023,7 @@ function onConversationDeletedActive() {
               :open="profileOpen"
               :is-authenticated="auth.isAuthenticated"
               :username="auth.username"
+              :is-admin="auth.isAdmin"
               @update:open="profileOpen = $event"
               @logout="logout"
               @open-conversation="openConversation"
@@ -1384,43 +1340,6 @@ function onConversationDeletedActive() {
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.02em;
-}
-
-.ds-rag-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--chat-border-strong);
-  background: var(--chat-btn-bg);
-  color: var(--chat-muted);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-  user-select: none;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease;
-}
-
-.ds-rag-toggle:hover {
-  background: var(--chat-btn-bg-hover);
-  border-color: var(--chat-border-strong);
-  color: var(--chat-fg-strong);
-}
-
-.ds-rag-toggle-input {
-  accent-color: var(--accent, #5ee1d5);
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  cursor: pointer;
-}
-
-.ds-rag-toggle-label {
-  white-space: nowrap;
 }
 
 /* 收起右侧栏时：顶栏「新建」与旧侧栏窄轨按钮一致 */

@@ -8,6 +8,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import ChatProfileDrawer from '../components/chat/ChatProfileDrawer.vue'
+import SiteMailBell from '../components/site-mail/SiteMailBell.vue'
 import FullscreenImagePreview from '../components/FullscreenImagePreview.vue'
 import { nanoBananaEdit, nanoBananaTextToImage, optimizeImageStudioPrompt } from '../api/imageStudio'
 import { fetchMeImagesPage, patchMyImageFavorite } from '../api/meProfile'
@@ -248,7 +249,9 @@ function onDocClick(e) {
   if (
     e.target.closest?.('.pp-shell') ||
     e.target.closest?.('.pp-modal-shell') ||
-    e.target.closest?.('.ig-profile-wrap')
+    e.target.closest?.('.ig-profile-wrap') ||
+    e.target.closest?.('.site-mail-wrap') ||
+    e.target.closest?.('.sm-shell')
   ) {
     return
   }
@@ -824,6 +827,7 @@ onUnmounted(() => {
         <button type="button" class="ig-pill-btn" @click="newCreation">新建创作</button>
       </div>
       <div class="ig-topbar-trail">
+        <SiteMailBell />
         <span v-if="auth.isAuthenticated" class="ig-points-chip" title="当前可用积分">积分 {{ auth.points }}</span>
         <div ref="profileWrapRef" class="ig-profile-wrap">
           <button
@@ -841,6 +845,7 @@ onUnmounted(() => {
             :open="profileOpen"
             :is-authenticated="auth.isAuthenticated"
             :username="auth.username"
+            :is-admin="auth.isAdmin"
             @update:open="profileOpen = $event"
             @logout="logout"
             @open-conversation="openConversation"

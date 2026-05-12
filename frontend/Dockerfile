@@ -12,6 +12,9 @@ RUN --mount=type=cache,target=/root/.npm \
       npm install --no-audit --no-fund'
 
 COPY . .
+# 与镜像 tag 对齐时：docker build --build-arg VITE_APP_VERSION=v4.1 ...
+ARG VITE_APP_VERSION=""
+ENV VITE_APP_VERSION=$VITE_APP_VERSION
 RUN npm run build
 
 FROM nginx:alpine

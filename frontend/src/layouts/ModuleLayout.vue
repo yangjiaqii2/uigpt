@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import ChatProfileDrawer from '../components/chat/ChatProfileDrawer.vue'
+import SiteMailBell from '../components/site-mail/SiteMailBell.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,6 +15,7 @@ const ROUTE_TITLE_FALLBACK = {
   'studio-works': '作品库',
   knowledge: '知识库',
   prompts: '提示词',
+  'admin-site-mail': '站内信',
 }
 
 const profileOpen = ref(false)
@@ -94,7 +96,10 @@ const items = computed(() => {
     { to: '/prompts', label: '提示词', sub: '收藏', icon: '✦', requiresAuth: true },
   ]
   if (auth.isAdmin) {
-    base.push({ to: '/admin/users', label: '用户管理', sub: '账号', icon: '👤', requiresAuth: true, requiresAdmin: true })
+    base.push(
+      { to: '/admin/users', label: '用户管理', sub: '账号', icon: '👤', requiresAuth: true, requiresAdmin: true },
+      { to: '/admin/site-mail', label: '站内信', sub: '消息', icon: '✉️', requiresAuth: true, requiresAdmin: true },
+    )
   }
   return base
 })
@@ -128,7 +133,9 @@ function onDocClick(e) {
     e.target.closest?.('.sb-ctx-menu') ||
     e.target.closest?.('.srl-ctx') ||
     e.target.closest?.('.delconv-shell') ||
-    e.target.closest?.('.prm-modal-backdrop')
+    e.target.closest?.('.prm-modal-backdrop') ||
+    e.target.closest?.('.site-mail-wrap') ||
+    e.target.closest?.('.sm-shell')
   ) {
     return
   }
@@ -209,6 +216,7 @@ watch(
       <header v-if="showModuleTopbar" class="mod-topbar">
         <span class="mod-topbar-title">{{ moduleTopTitle }}</span>
         <div class="mod-topbar-trailing">
+          <SiteMailBell />
           <div ref="profileWrapRef" class="mod-profile-wrap">
             <button
               type="button"
@@ -225,6 +233,7 @@ watch(
               :open="profileOpen"
               :is-authenticated="auth.isAuthenticated"
               :username="auth.username"
+              :is-admin="auth.isAdmin"
               @update:open="profileOpen = $event"
               @logout="logout"
               @open-conversation="openConversation"

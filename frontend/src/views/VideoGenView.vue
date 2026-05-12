@@ -7,6 +7,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import ChatProfileDrawer from '../components/chat/ChatProfileDrawer.vue'
+import SiteMailBell from '../components/site-mail/SiteMailBell.vue'
 import { optimizeImageStudioPrompt } from '../api/imageStudio'
 import { submitSora2Video, submitSora2VideoMultipart, getSora2Task, finalizeSora2Task } from '../api/videoStudio'
 import { fetchMeImagesPage } from '../api/meProfile'
@@ -369,7 +370,9 @@ function onDocClick(e) {
     e.target.closest?.('.vg-profile-wrap') ||
     e.target.closest?.('.vg-proj-drawer') ||
     e.target.closest?.('.vg-export-modal') ||
-    e.target.closest?.('.vg-ctx-menu')
+    e.target.closest?.('.vg-ctx-menu') ||
+    e.target.closest?.('.site-mail-wrap') ||
+    e.target.closest?.('.sm-shell')
   ) {
     return
   }
@@ -728,6 +731,7 @@ onUnmounted(() => {
         </button>
       </div>
       <div class="vg-topbar-trail">
+        <SiteMailBell />
         <div class="vg-quota" title="按秒计费示意">
           <span class="vg-quota-label">剩余</span>
           <strong>{{ remainingQuotaSec }}s</strong>
@@ -748,6 +752,7 @@ onUnmounted(() => {
             :open="profileOpen"
             :is-authenticated="auth.isAuthenticated"
             :username="auth.username"
+            :is-admin="auth.isAdmin"
             @update:open="profileOpen = $event"
             @logout="logout"
             @open-conversation="openConversation"

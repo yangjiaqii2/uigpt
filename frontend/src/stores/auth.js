@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useSiteMailStore } from './siteMail'
 
 /** 与后端 {@code UserPrivilege.SUPER_ADMIN} / GET /api/me 的 privilege 一致 */
 const SUPER_ADMIN_PRIVILEGE = 2
@@ -86,6 +87,11 @@ export const useAuthStore = defineStore('auth', () => {
     points.value = 0
     meLoaded.value = false
     persist()
+    try {
+      useSiteMailStore().reset()
+    } catch {
+      /* ignore */
+    }
   }
 
   return {

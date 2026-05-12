@@ -1,0 +1,152 @@
+# 镜像与 docker/build-push.sh 一致：krccr.ccs.tencentyun.com / uigpt/backend / uigpt/frontend
+#
+# 版本号（镜像 tag = 与 Git 标签对齐）：
+#   - 合并到 main：根据仓库里已有 vX.Y（或 vX.Y.Z）Git 标签取最大版本并 +1（v4.0 → v4.1）；
+#     部署成功后 CI 会推送同名 Git 标签，下次合并才会继续 v4.2…
+#   - workflow_dispatch：必须在 image_tag 填写版本（如 v4.2），不自动递增
+#
+# 若仓库里还没有任何 v* 标签：首次合并会得到 v1.0；若线上已是 v4.0 但 Git 无标签，
+#   可在仓库 Settings → Variables 增加 VERSION_SEED=v4.0，则首次递增为 v4.1。
+#
+# Secrets：TCR_USERNAME / TCR_PASSWORD；TCR_REGISTRY 可选（默认同上 krccr）
+#         SSH_HOST / SSH_USER / SSH_PRIVATE_KEY / DEPLOY_PATH
+#
+# 需要写仓库标签权限：permissions.contents = write（用于推送递增后的 Git tag）
+
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: '指定镜像与 Git 标签（如 v4.2）；留空则仅 main 推送时自动递增'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-prod-main
+  cancel-in-progress: false
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      BACKEND_REPO: uigpt/backend
+      FRONTEND_REPO: uigpt/frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve registry and image tag
+        id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          DISPATCH_TAG: ${{ inputs.image_tag }}
+          VERSION_SEED: ${{ vars.VERSION_SEED }}
+        run: |
+          set -euo pipefail
+          REG='${{ secrets.TCR_REGISTRY }}'
+          if [ -z "$REG" ]; then REG='krccr.ccs.tencentyun.com'; fi
+          echo "registry=$REG" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$DISPATCH_TAG" ]; then
+            TAG="$DISPATCH_TAG"
+            echo "should_push_git_tag=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = "workflow_dispatch" ] && [ -z "$DISPATCH_TAG" ]; then
+            echo "::error::手动运行请在 image_tag 中填写版本（如 v4.2）；自动递增请合并到 main"
+            exit 1
+          elif [ "$EVENT" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            git fetch --tags --prune origin || true
+            LATEST=$(git tag -l 'v*' | (grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' || true) | sort -V | tail -1)
+            if [ -z "$LATEST" ] && [ -n "${VERSION_SEED:-}" ]; then
+              LATEST="$VERSION_SEED"
+            fi
+            if [ -z "$LATEST" ]; then
+              TAG="v1.0"
+            else
+              VER="${LATEST#v}"
+              MA=$(echo "$VER" | cut -d. -f1)
+              MI=$(echo "$VER" | cut -d. -f2)
+              PA=$(echo "$VER" | cut -d. -f3)
+              if [ -n "$PA" ] && [ "$PA" != "$VER" ]; then
+                TAG="v${MA}.${MI}.$((PA + 1))"
+              else
+                TAG="v${MA}.$((MI + 1))"
+              fi
+            fi
+            echo "should_push_git_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::不支持的触发方式"
+            exit 1
+          fi
+
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using registry=$REG image_tag=$TAG"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Tencent Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.meta.outputs.registry }}
+          username: ${{ secrets.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta.outputs.registry }}/${{ env.BACKEND_REPO }}:${{ steps.meta.outputs.image_tag }}
+          build-args: |
+            USE_MAVEN_MIRROR=true
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.meta.outputs.registry }}/${{ env.FRONTEND_REPO }}:${{ steps.meta.outputs.image_tag }}
+          build-args: |
+            NPM_REGISTRY=https://registry.npmmirror.com
+            VITE_APP_VERSION=${{ steps.meta.outputs.image_tag }}
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            export TAG="${{ steps.meta.outputs.image_tag }}"
+            docker compose -f docker-compose.server.yml pull uigpt-backend myapp-frontend
+            docker compose -f docker-compose.server.yml up -d uigpt-backend myapp-frontend
+
+      - name: Push release Git tag
+        if: steps.meta.outputs.should_push_git_tag == 'true'
+        env:
+          TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git ls-remote origin "refs/tags/$TAG" 2>/dev/null || true)" ]; then
+            echo "Remote already has tag $TAG; skip git tag push"
+            exit 0
+          fi
+          git tag -a "$TAG" -m "ci: release $TAG" "${{ github.sha }}"
+          git push origin "$TAG"

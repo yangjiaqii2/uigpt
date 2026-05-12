@@ -22,6 +22,8 @@
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/PromptTemplateController.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/RagAdminController.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/RootController.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/SiteMailAdminController.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/SiteMailMeController.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/VideoStudioController.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/crypto/ModelKeyCryptoUtil.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/AdminUserCreateRequest.java
@@ -69,12 +71,19 @@
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/UserProfileResponse.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/UserStatsResponse.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/VideoStudioFinalizeRequest.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/site/AdminSiteMailThreadPageResponse.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/site/AdminSiteMailThreadRowResponse.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/site/SiteMailMessageResponse.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/site/SiteMailSummaryResponse.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/dto/site/SiteMailThreadDetailResponse.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/ChatConversation.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/ChatConversationImage.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/ChatMessageRow.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/ChatModel.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/KnowledgeDocument.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/PromptTemplate.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/SiteMailMessage.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/SiteMailThread.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/entity/User.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/model/UserPrivilege.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/ChatConversationImageRepository.java
@@ -83,6 +92,8 @@
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/ChatModelRepository.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/KnowledgeDocumentRepository.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/PromptTemplateRepository.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/SiteMailMessageRepository.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/SiteMailThreadRepository.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/repository/UserRepository.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/AdminAuthorizationService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/AdminUserService.java
@@ -106,6 +117,7 @@
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/RegisterImageCaptchaService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/RegisterIpRateLimiter.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/RetouchPromptLoader.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/service/SiteMailService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/TencentCosStorageService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/WireframePromptLoader.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/util/ClientIpResolver.java
