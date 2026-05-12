@@ -1,0 +1,5 @@
+config/uigpt-local.yml
+config/runtime-local.properties
+.env
+.env.jwt
+.env.db

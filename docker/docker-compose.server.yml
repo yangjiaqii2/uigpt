@@ -1,0 +1,68 @@
+# 服务器上仅用本 Compose 启动（含 Qdrant + 后端 + 前端），勿再单独 docker run -p 6333 起 Qdrant，否则端口冲突。
+# 若本机已有同名或占 6333 的容器：docker stop qdrant uigpt-qdrant 2>/dev/null; docker rm qdrant uigpt-qdrant 2>/dev/null
+#
+# 将 server.env.example 复制为本目录 server.env 并填写；可选 Qdrant API Key：cp qdrant.env.example qdrant.env 后编辑。
+# 在仓库根目录执行：
+#   docker compose -f docker/docker-compose.server.yml pull && docker compose -f docker/docker-compose.server.yml up -d
+#
+# 镜像标签：默认 latest。指定版本可在仓库根目录 .env 写 TAG=v1.2.3，或单次执行：
+#   TAG=v1.2.3 docker compose -f docker/docker-compose.server.yml pull && docker compose -f docker/docker-compose.server.yml up -d
+#
+# 完整镜像地址（与 TAG 二选一；云上内网仓库常用，路径可能与公网域名不一致）：
+#   在仓库根目录 .env 写：
+#     BACKEND_IMAGE=krccr.ccs.tencentyun.com/uigpt/backend:v1.0
+#     FRONTEND_IMAGE=krccr.ccs.tencentyun.com/uigpt/frontend:v1.0
+#   仅使用本地已 pull 的镜像时建议：... up -d --pull never（避免再去解析 uigpt.tencentcloudcr.com）
+#
+# 注意：MySQL 须已建库（执行 docs/schema-mysql.sql），且容器能访问 DB（内网 IP / 云数据库地址）。
+#
+# 本文件已包含 Qdrant（服务名 qdrant）；后端在 server.env 中应设 UIGPT_RAG_QDRANT_URL=http://qdrant:6333。
+# 若需 Qdrant API Key：在 qdrant 服务下增加 environment: QDRANT__SERVICE__API_KEY: ...，并在 server.env 设 UIGPT_RAG_QDRANT_API_KEY 与之相同。
+#
+# 端口说明（勿写反）：
+#   - 域名默认走 80 → 必须映射到「前端」myapp-frontend（容器内 Nginx 监听 8080）：  "80:8080"
+#   - 后端 API 给浏览器经前端 /api 反代；若需直连调试再暴露：              "8088:8088"
+# 错误示例：backend 写 "80:8088"、frontend 写 "8080:8080" → 访问域名会打到 Spring，出现 Whitelabel/404。
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: uigpt-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    env_file:
+      - path: qdrant.env
+        required: false
+    restart: unless-stopped
+
+  uigpt-backend:
+    image: ${BACKEND_IMAGE:-uigpt.tencentcloudcr.com/uigpt/uigpt-backend:${TAG:-latest}}
+    container_name: uigpt-backend
+    ports:
+      - "8088:8088"
+    env_file:
+      - server.env
+    depends_on:
+      - qdrant
+    # MySQL 跑在宿主机时，容器内不要用 127.0.0.1；DB_URL 主机写 host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # 宿主机 80 → 容器内 8080；若 80 已被占用，可改回 8080:8080 并在云侧用 Nginx/CLB 反代
+  myapp-frontend:
+    image: ${FRONTEND_IMAGE:-uigpt.tencentcloudcr.com/uigpt/myapp-frontend:${TAG:-latest}}
+    container_name: myapp-frontend
+    ports:
+      - "80:8080"
+    environment:
+      BACKEND_HOST: uigpt-backend
+      BACKEND_PORT: "8088"
+    depends_on:
+      - uigpt-backend
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage:

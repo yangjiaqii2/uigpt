@@ -1,0 +1,7 @@
+# 复制为同目录 runtime-local.properties（已 gitignore），Spring Boot 会自动加载，无需 source。
+# 通义千问：https://dashscope.console.aliyun.com/apiKey
+DASHSCOPE_API_KEY=
+
+# MySQL 密码（推荐）：写在下面后，不必再在终端 export DB_PASSWORD；适合 IDE / DevTools 启动。
+# 与 shell 环境变量二选一即可；若仍报错 (using password: NO)，请取消下行注释并填写：
+# spring.datasource.password=你的MySQL密码

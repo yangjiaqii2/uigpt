@@ -1,0 +1,149 @@
+server:
+  port: 8088
+  error:
+    whitelabel:
+      enabled: false
+  # 多用户同时 SSE 对话 / 长耗时出图时保证有足够工作线程与排队连接
+  tomcat:
+    threads:
+      max: ${TOMCAT_THREADS_MAX:200}
+      min-spare: ${TOMCAT_THREADS_MIN_SPARE:20}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:10000}
+
+uigpt:
+  # 逗号分隔：可访问「用户管理」等 /api/admin/** 的登录用户名（须与 users.username 一致，大小写不敏感）。留空则管理接口全部 403
+  admin:
+    usernames-csv: ${UIGPT_ADMIN_USERNAMES:}
+  # true：用户消息原样转发上游 API，不注入系统提示/会话记忆/技能上下文，不识图预处理；false：启用原有改写与降级链
+  chat:
+    passthrough: ${UIGPT_CHAT_PASSTHROUGH:true}
+  # 登录用户积分：自然日按上海时区 Asia/Shanghai 重置；详见 PointsService 与 db/user_points.mysql.sql
+  points:
+    enabled: ${UIGPT_POINTS_ENABLED:true}
+    chat-turn-cost: ${UIGPT_POINTS_CHAT_TURN:5}
+    chat-turn-deep-cost: ${UIGPT_POINTS_CHAT_DEEP:10}
+  # JDK HttpClient 回调线程池（SSE、并行下载 URL）；可按 CPU×用户量调大
+  http-client:
+    worker-threads: ${UIGPT_HTTP_CLIENT_WORKER_THREADS:64}
+  jwt:
+    secret: ${UIGPT_JWT_SECRET:}
+    expiration-ms: 86400000
+  recaptcha:
+    enabled: ${UIGPT_RECAPTCHA_ENABLED:false}
+    site-key: ${UIGPT_RECAPTCHA_SITE_KEY:}
+    secret-key: ${UIGPT_RECAPTCHA_SECRET_KEY:}
+    min-score: ${UIGPT_RECAPTCHA_MIN_SCORE:0.5}
+  register-rate-limit:
+    max-per-hour: ${UIGPT_REGISTER_MAX_PER_HOUR:2}
+    max-per-24-hours: ${UIGPT_REGISTER_MAX_PER_24H:3}
+  # 解密 chat_models.api_key_cipher；表 chat_models.base_url 可指向 API易等网关（须含 /v1）以实现与 DashScope 混池
+  model-key-master-secret: ${UIGPT_MODEL_KEY_MASTER:}
+  ai:
+    # 密钥仅从环境变量注入（勿提交仓库）。通义千问：DASHSCOPE_API_KEY 或 QWEN_API_KEY；亦兼容 OPENAI_API_KEY
+    api-key: ${DASHSCOPE_API_KEY:${QWEN_API_KEY:${OPENAI_API_KEY:}}}
+    # 通义千问 OpenAI 兼容模式；使用 OpenAI 时改为 https://api.openai.com/v1
+    base-url: ${AI_BASE_URL:${OPENAI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+    model: ${AI_MODEL:${OPENAI_MODEL:qwen-turbo}}
+    # 单次助手回复长度上限（max_tokens）
+    max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:2048}
+  # APIYi OpenAI 兼容网关（自由对话默认经此转发；密钥 APIYI_API_KEY）。APIYI_IMAGE_ENABLED 保留兼容，业务就绪以 api-key 为准
+  api-yi-image:
+    enabled: ${APIYI_IMAGE_ENABLED:false}
+    base-url: ${APIYI_BASE_URL:https://api.apiyi.com}
+    # 兼容备用名 UIGPT_APIYI_API_KEY（部分编排平台不便用 APIYI_ 前缀时）
+    api-key: ${APIYI_API_KEY:${UIGPT_APIYI_API_KEY:}}
+    model: ${APIYI_IMAGE_MODEL:gpt-image-2-all}
+    # generations/edits：url（默认，R2 ~24h）或 b64_json。服务端转存 COS 推荐 url
+    generations-response-format: ${APIYI_GENERATIONS_RESPONSE_FORMAT:url}
+    # gpt-image-2-vip：1k（Fast）| 2k（Recommended）| 4k（Detail），与文档 30 档一致
+    vip-size-tier: ${APIYI_VIP_SIZE_TIER:2k}
+    # 文生图加权轮流：OpenAI(GPT) 与 Gemini；默认 3:1 → GPT 约 75%
+    rotate-tti-providers: ${APIYI_ROTATE_TTI:true}
+    tti-open-ai-weight: ${APIYI_TTI_OPENAI_WEIGHT:3}
+    tti-gemini-weight: ${APIYI_TTI_GEMINI_WEIGHT:1}
+    gemini-image-model: ${APIYI_GEMINI_IMAGE_MODEL:gemini-3.1-flash-image-preview}
+    gemini-image-size: ${APIYI_GEMINI_IMAGE_SIZE:2K}
+    # Nano Banana Pro：文生图 / 图片编辑（与 flash 文生图轮流路由无关）
+    nano-banana-image-model: ${APIYI_NANO_BANANA_MODEL:gemini-3-pro-image-preview}
+    # 识图（/v1/chat/completions 多模态），与文生图模型相互独立；见 https://docs.apiyi.com 视觉 API
+    vision-enabled: ${APIYI_VISION_ENABLED:true}
+    vision-model: ${APIYI_VISION_MODEL:gpt-4.1-mini}
+    # 识图摘要越短越快返回；主对话仍用用户所选大模型
+    vision-max-tokens: ${APIYI_VISION_MAX_TOKENS:640}
+    # 图片创作 · 提示词优化（/v1/chat/completions 纯文本）；默认同 vision-model
+    prompt-optimize-model: ${APIYI_PROMPT_OPTIMIZE_MODEL:}
+    prompt-optimize-max-tokens: ${APIYI_PROMPT_OPTIMIZE_MAX_TOKENS:640}
+    # 识图预分析 HTTP 读超时（秒），与文生图 RestClient 300s 分离，避免异常慢响应堵死首包
+    vision-read-timeout-seconds: ${APIYI_VISION_READ_TIMEOUT_SECONDS:18}
+    # true：参考图直接随主模型多模态发送（默认，省去阻塞的识图摘要）；false：保留先识图摘要再对话
+    vision-inline-multimodal: ${APIYI_VISION_INLINE_MULTIMODAL:true}
+  # 向量知识库（Qdrant + OpenAI 兼容 embeddings）。对话检索：UIGPT_RAG_ENABLED=true 且配全 URL/密钥/集合后生效。
+  # 知识库管理：列表读 MySQL（无单独「列表↔库」同步）；写入时先 upsert Qdrant 再存库，见 KnowledgeDocumentService。
+  # 首次建表：在 MySQL 执行 classpath 资源 db/knowledge_documents.mysql.sql（仓库路径 backend/src/main/resources/db/knowledge_documents.mysql.sql）。
+  rag:
+    enabled: ${UIGPT_RAG_ENABLED:false}
+    qdrant-url: ${UIGPT_RAG_QDRANT_URL:http://localhost:6333}
+    qdrant-api-key: ${UIGPT_RAG_QDRANT_API_KEY:}
+    collection: ${UIGPT_RAG_COLLECTION:uigpt_kb}
+    embedding-base-url: ${UIGPT_RAG_EMBEDDING_BASE_URL:}
+    embedding-api-key: ${UIGPT_RAG_EMBEDDING_API_KEY:${APIYI_API_KEY:${UIGPT_APIYI_API_KEY:}}}
+    embedding-model: ${UIGPT_RAG_EMBEDDING_MODEL:text-embedding-3-small}
+    top-k: ${UIGPT_RAG_TOP_K:5}
+    min-score: ${UIGPT_RAG_MIN_SCORE:0}
+    max-query-chars: ${UIGPT_RAG_MAX_QUERY_CHARS:8000}
+    read-timeout-seconds: ${UIGPT_RAG_READ_TIMEOUT_SECONDS:45}
+  # 腾讯云 COS（会话图片、文生图落库）。密钥务必用环境变量注入，勿写入仓库。
+  cos:
+    enabled: ${UIGPT_COS_ENABLED:true}
+    secret-id: ${COS_SECRET_ID:}
+    secret-key: ${COS_SECRET_KEY:}
+    region: ${COS_REGION:ap-guangzhou}
+    bucket: ${COS_BUCKET:}
+    # 可选：CDN 或自定义域名，末尾不要斜杠；留空则默认 https://{bucket}.cos.{region}.myqcloud.com
+    public-url-prefix: ${COS_PUBLIC_URL_PREFIX:}
+    # 启动时 HeadBucket；子账号策略常不含此项导致 403，默认关闭（设为 true 需 CAM 含 HeadBucket）
+    verify-bucket-on-startup: ${COS_VERIFY_BUCKET_ON_START:false}
+    # 私有桶下前端图片地址使用预签名 GET 的有效期（秒），默认 24 小时
+    presigned-url-expiry-seconds: ${COS_PRESIGNED_URL_EXPIRY_SECONDS:86400}
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 25MB
+      max-request-size: 28MB
+  # 流式对话可与上游 SSE 同尺度耗时（毫秒）；默认过短会 AsyncRequestTimeoutException 并中断 HttpClient
+  mvc:
+    async:
+      request-timeout: 600000
+  application:
+    name: uigpt-backend
+  datasource:
+    # 数据源（任选其一）：
+    # 1）整条 JDBC：环境变量 DB_URL 或 SPRING_DATASOURCE_URL（优先级：DB_URL > SPRING_DATASOURCE_URL）
+    # 2）拼接：DB_HOST、DB_PORT、DB_NAME（均有默认值时可不配）
+    # 账号密码：DB_USERNAME / DB_PASSWORD，或与 Spring 约定 SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD
+    url: ${DB_URL:${SPRING_DATASOURCE_URL:jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:uigpt}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}}
+    username: ${DB_USERNAME:${SPRING_DATASOURCE_USERNAME:root}}
+    password: ${DB_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      pool-name: uigpt-pool
+      maximum-pool-size: ${DB_POOL_MAX:32}
+      minimum-idle: ${DB_POOL_MIN_IDLE:8}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  config:
+    import:
+      # uigpt-local.yml：可选本地 YAML；runtime-local.properties：KEY=VALUE，供 Spring 直接读取（无需 source）
+      - optional:file:./config/uigpt-local.yml
+      - optional:file:./config/runtime-local.properties

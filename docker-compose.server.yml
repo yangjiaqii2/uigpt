@@ -1,0 +1,61 @@
+# 仅用本 Compose 启动（含 Qdrant + 后端 + 前端）。勿再单独 docker run 占 6333；已有则先 stop/rm。
+# server.env：cp docker/server.env.example server.env 并填写。
+# 可选 Qdrant API Key：cp docker/qdrant.env.example docker/qdrant.env 并填写（与 server.env 的 UIGPT_RAG_QDRANT_API_KEY 一致）。
+# docker compose -f docker-compose.server.yml pull && docker compose -f docker-compose.server.yml up -d
+#
+# 镜像标签：默认 latest。本目录或上级目录的 .env 可写 TAG=v1.0，或：
+#   TAG=v1.0 docker compose -f docker-compose.server.yml up -d
+#
+# 云上内网仓库（krccr）与公网域名路径不一致时，必须在 .env 或环境中指定完整镜像（TAG 不会改域名）：
+#   BACKEND_IMAGE=krccr.ccs.tencentyun.com/uigpt/backend:v1.0
+#   FRONTEND_IMAGE=krccr.ccs.tencentyun.com/uigpt/frontend:v1.0
+# 仅使用本地已 pull 的镜像：docker compose -f docker-compose.server.yml up -d --pull never
+#
+# MySQL 须已建库（docs/schema-mysql.sql）；env_file 路径相对于本文件所在目录。
+#
+# 端口：宿主机 80 → 前端容器 8080（"80:8080"）；后端 "8088:8088"。不要把 80 绑在后端上。
+#
+# Qdrant 与后端同 compose（服务名 qdrant）；server.env 中 UIGPT_RAG_QDRANT_URL=http://qdrant:6333。
+# 若需 API Key：在 qdrant 服务下增加 environment: QDRANT__SERVICE__API_KEY: ...，并设 UIGPT_RAG_QDRANT_API_KEY。
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: uigpt-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    env_file:
+      - path: docker/qdrant.env
+        required: false
+    restart: unless-stopped
+
+  uigpt-backend:
+    image: ${BACKEND_IMAGE:-uigpt.tencentcloudcr.com/uigpt/uigpt-backend:${TAG:-latest}}
+    container_name: uigpt-backend
+    ports:
+      - "8088:8088"
+    env_file:
+      - ./server.env
+    depends_on:
+      - qdrant
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # 宿主机 80 → 容器内 Nginx 8080，浏览器访问域名无需写端口
+  myapp-frontend:
+    image: ${FRONTEND_IMAGE:-uigpt.tencentcloudcr.com/uigpt/myapp-frontend:${TAG:-latest}}
+    container_name: myapp-frontend
+    ports:
+      - "80:8080"
+    environment:
+      BACKEND_HOST: uigpt-backend
+      BACKEND_PORT: "8088"
+    depends_on:
+      - uigpt-backend
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage:

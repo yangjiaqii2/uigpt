@@ -1,0 +1,7 @@
+target/
+.git
+.gitignore
+*.md
+.env*
+config/runtime-local.properties
+config/uigpt-local.yml

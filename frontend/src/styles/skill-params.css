@@ -1,0 +1,713 @@
+/**
+ * 技能参数面板：统一网格、间距、组卡片、控件高度与圆角。
+ * 与 ChatComposerDock 内 `.dock-params-region` 联用。
+ */
+
+:root {
+  --sp-control-h: 44px;
+  --sp-radius: 12px;
+  --sp-radius-lg: 14px;
+  --sp-gap-field: 22px;
+  --sp-gap-group: 30px;
+  --sp-label-size: 13px;
+  --sp-label-weight: 600;
+  --sp-control-text: 14px;
+  --sp-hint-size: 12px;
+  --sp-group-title-size: 11px;
+  --sp-chip-min-h: 44px;
+}
+
+/* ---------- 面板栈 ---------- */
+.sp-param-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-gap-group);
+  width: 100%;
+  min-width: 0;
+}
+
+/* ---------- 组卡片 ---------- */
+.sp-param-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-gap-field);
+  padding: 14px 14px 16px;
+  border-radius: var(--sp-radius-lg);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.06);
+}
+
+html[data-theme='light'] .sp-param-group {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(15, 23, 42, 0.07);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.04);
+}
+
+/* 仅分组标题 + 内容，不要内嵌盒子（如快捷示例） */
+.sp-param-group--ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding: 4px 4px 8px;
+}
+
+html[data-theme='light'] .sp-param-group--ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.sp-param-group-title {
+  margin: 0 0 -6px;
+  padding: 0 2px;
+  font-size: var(--sp-group-title-size);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+html[data-theme='light'] .sp-param-group-title {
+  color: rgba(15, 23, 42, 0.42);
+}
+
+/* ---------- 字段：标签在上，控件在下，左对齐 ---------- */
+.sp-param-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.sp-param-label {
+  font-size: var(--sp-label-size);
+  font-weight: var(--sp-label-weight);
+  color: rgba(255, 255, 255, 0.52);
+  line-height: 1.25;
+}
+
+html[data-theme='light'] .sp-param-label {
+  color: rgba(15, 23, 42, 0.52);
+}
+
+.sp-param-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sp-param-label-meta {
+  font-size: var(--sp-hint-size);
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.42);
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-theme='light'] .sp-param-label-meta {
+  color: rgba(15, 23, 42, 0.42);
+}
+
+.sp-param-hint {
+  margin: 0;
+  font-size: var(--sp-hint-size);
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+html[data-theme='light'] .sp-param-hint {
+  color: rgba(15, 23, 42, 0.42);
+}
+
+/* ---------- 网格（严格对齐） ---------- */
+.sp-param-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-gap-field);
+}
+
+.sp-param-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-gap-field);
+}
+
+@media (max-width: 560px) {
+  .sp-param-grid-2,
+  .sp-param-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- 下拉占满宽度（配合 GlassSelect fullWidth） ---------- */
+.sp-param-field .glass-dd--block {
+  width: 100%;
+  display: flex;
+}
+
+.sp-param-field .glass-dd--block .glass-dd-trigger {
+  width: 100%;
+  min-height: var(--sp-control-h);
+  border-radius: var(--sp-radius);
+  font-size: var(--sp-control-text);
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+/* ---------- 原生数字 / 文本输入 ---------- */
+.sp-param-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: var(--sp-control-h);
+  padding: 0 14px;
+  border-radius: var(--sp-radius);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(248, 250, 252, 0.92);
+  font-size: var(--sp-control-text);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.sp-param-input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: var(--sp-control-text);
+}
+
+.sp-param-input:focus {
+  outline: none;
+  border-color: rgba(94, 225, 213, 0.35);
+  box-shadow: 0 0 0 1px rgba(94, 225, 213, 0.12);
+}
+
+html[data-theme='light'] .sp-param-input {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(15, 23, 42, 0.1);
+  color: rgba(15, 23, 42, 0.92);
+}
+
+html[data-theme='light'] .sp-param-input::placeholder {
+  color: rgba(15, 23, 42, 0.38);
+}
+
+html[data-theme='light'] .sp-param-input:focus {
+  border-color: rgba(13, 148, 136, 0.35);
+  box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.12);
+}
+
+/* ---------- 分段选择器：外框胶囊 + 内部等分 ---------- */
+.sp-param-seg {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='light'] .sp-param-seg {
+  background: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
+.sp-param-seg--wrap {
+  flex-wrap: wrap;
+}
+
+/* 分段按钮网格（文案较长时用网格而非单行胶囊） */
+.sp-param-seg-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.sp-param-seg-grid--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.sp-param-seg-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .sp-param-seg-grid--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .sp-param-seg-grid--3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sp-param-seg-grid .sp-param-seg-btn {
+  min-height: 40px;
+  border-radius: var(--sp-radius);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+html[data-theme='light'] .sp-param-seg-grid .sp-param-seg-btn {
+  border-color: rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.sp-param-seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: calc(var(--sp-control-h) - 8px);
+  padding: 0 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+html[data-theme='light'] .sp-param-seg-btn {
+  color: rgba(15, 23, 42, 0.48);
+}
+
+.sp-param-seg-btn:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+html[data-theme='light'] .sp-param-seg-btn:hover:not(:disabled) {
+  color: rgba(15, 23, 42, 0.78);
+}
+
+.sp-param-seg-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 选中态颜色由各面板 modifiers 覆盖 */
+.sp-param-seg-btn--on {
+  background: rgba(94, 225, 213, 0.16);
+  color: rgba(252, 252, 252, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(94, 225, 213, 0.22);
+}
+
+html[data-theme='light'] .sp-param-seg-btn--on {
+  background: rgba(13, 148, 136, 0.14);
+  color: rgba(15, 23, 42, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(13, 148, 136, 0.2);
+}
+
+.sp-param-seg-btn--on-blue {
+  background: rgba(59, 130, 246, 0.18);
+  color: rgba(252, 252, 252, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.28);
+}
+
+html[data-theme='light'] .sp-param-seg-btn--on-blue {
+  background: rgba(59, 130, 246, 0.14);
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.sp-param-seg-btn--on-violet {
+  background: rgba(139, 92, 246, 0.18);
+  color: rgba(252, 252, 252, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.28);
+}
+
+html[data-theme='light'] .sp-param-seg-btn--on-violet {
+  background: rgba(139, 92, 246, 0.12);
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.sp-param-seg-btn--on-amber {
+  background: rgba(245, 158, 11, 0.18);
+  color: rgba(252, 252, 252, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.28);
+}
+
+html[data-theme='light'] .sp-param-seg-btn--on-amber {
+  background: rgba(245, 158, 11, 0.12);
+  color: rgba(15, 23, 42, 0.92);
+}
+
+/* ---------- 滑块 ---------- */
+.sp-param-range-wrap {
+  padding-top: 2px;
+}
+
+.sp-param-range {
+  display: block;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  cursor: pointer;
+  accent-color: var(--sp-range-accent, #5ee1d5);
+  background: transparent;
+}
+
+.sp-param-range:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sp-param-range-ticks {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-top: 8px;
+  padding: 0 2px;
+  font-size: var(--sp-hint-size);
+  color: rgba(255, 255, 255, 0.38);
+  line-height: 1.3;
+}
+
+html[data-theme='light'] .sp-param-range-ticks {
+  color: rgba(15, 23, 42, 0.38);
+}
+
+.sp-param-range-ticks span {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+}
+
+.sp-param-range-ticks span:first-child {
+  text-align: left;
+}
+
+.sp-param-range-ticks span:last-child {
+  text-align: right;
+}
+
+/* ---------- 多选芯片 ---------- */
+.sp-param-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sp-param-chip {
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.18s ease;
+}
+
+html[data-theme='light'] .sp-param-chip {
+  border-color: rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.65);
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.sp-param-chip:hover:not(:disabled) {
+  border-color: rgba(94, 225, 213, 0.25);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.sp-param-chip--on {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.14);
+  color: rgba(252, 252, 252, 0.95);
+}
+
+.sp-param-chip--on-amber {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+  color: rgba(252, 252, 252, 0.95);
+}
+
+html[data-theme='light'] .sp-param-chip--on-amber {
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  color: rgba(15, 23, 42, 0.88);
+}
+
+html[data-theme='light'] .sp-param-chip--on {
+  border-color: rgba(13, 148, 136, 0.35);
+  background: rgba(13, 148, 136, 0.1);
+  color: rgba(15, 23, 42, 0.88);
+}
+
+.sp-param-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 上传提示：等宽按钮 ---------- */
+.sp-param-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 520px) {
+  .sp-param-upload-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sp-param-upload-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--sp-chip-min-h);
+  padding: 10px 12px;
+  border-radius: var(--sp-radius);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.15);
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1.35;
+  cursor: default;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+html[data-theme='light'] .sp-param-upload-btn {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.58);
+}
+
+.sp-param-upload-btn:hover {
+  border-color: rgba(94, 225, 213, 0.22);
+}
+
+.sp-param-upload-ic {
+  font-size: 20px;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+/* ---------- 快捷示例：等分网格 ---------- */
+.sp-param-quick-head {
+  margin: 0 0 10px;
+  font-size: var(--sp-group-title-size);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+html[data-theme='light'] .sp-param-quick-head {
+  color: rgba(15, 23, 42, 0.42);
+}
+
+.sp-param-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .sp-param-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .sp-param-quick-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sp-param-quick-card {
+  display: flex;
+  align-items: center;
+  min-height: 72px;
+  padding: 12px 14px;
+  border-radius: var(--sp-radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.14);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: var(--sp-control-text);
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    transform 0.18s ease;
+}
+
+html[data-theme='light'] .sp-param-quick-card {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.78);
+}
+
+.sp-param-quick-card:hover:not(:disabled) {
+  border-color: rgba(94, 225, 213, 0.28);
+  background: rgba(94, 225, 213, 0.06);
+  transform: translateY(-1px);
+}
+
+.sp-param-quick-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 步进器（色板数量等） ---------- */
+.sp-param-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--sp-control-h);
+  padding: 0 8px;
+  gap: 8px;
+  border-radius: var(--sp-radius);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.18);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 200px;
+}
+
+html[data-theme='light'] .sp-param-stepper {
+  border-color: rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.sp-param-step-btn {
+  width: 38px;
+  height: 34px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(248, 250, 252, 0.92);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+html[data-theme='light'] .sp-param-step-btn {
+  background: rgba(15, 23, 42, 0.06);
+  color: rgba(15, 23, 42, 0.88);
+}
+
+.sp-param-step-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.sp-param-step-val {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(252, 252, 252, 0.88);
+}
+
+html[data-theme='light'] .sp-param-step-val {
+  color: rgba(15, 23, 42, 0.88);
+}
+
+/* ---------- 原生 color + 辅助按钮 ---------- */
+.sp-param-color-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sp-param-color-native {
+  width: var(--sp-control-h);
+  height: var(--sp-control-h);
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--sp-radius);
+  cursor: pointer;
+  background: transparent;
+}
+
+html[data-theme='light'] .sp-param-color-native {
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+.sp-param-clear-btn {
+  height: var(--sp-control-h);
+  padding: 0 16px;
+  border-radius: var(--sp-radius);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+html[data-theme='light'] .sp-param-clear-btn {
+  border-color: rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.75);
+  color: rgba(15, 23, 42, 0.65);
+}
+
+.sp-param-clear-btn:hover:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.sp-param-clear-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 详情文案（风格/比例说明） ---------- */
+.sp-param-detail {
+  margin: -6px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--sp-radius);
+  font-size: var(--sp-hint-size);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.42);
+  background: rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+html[data-theme='light'] .sp-param-detail {
+  color: rgba(15, 23, 42, 0.48);
+  background: rgba(15, 23, 42, 0.03);
+  border-color: rgba(15, 23, 42, 0.06);
+}
+
+.sp-param-detail strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--sp-hint-size);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.48);
+}
+
+html[data-theme='light'] .sp-param-detail strong {
+  color: rgba(15, 23, 42, 0.52);
+}

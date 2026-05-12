@@ -1,0 +1,178 @@
+/* 默认深色（与 index.html data-theme 一致） */
+html[data-theme='dark'],
+html:not([data-theme]) {
+  --bg-deep: #07090f;
+  --bg-panel: rgba(18, 22, 32, 0.72);
+  --stroke: rgba(120, 162, 255, 0.14);
+  --text: #e8ecf5;
+  --text-muted: rgba(232, 236, 245, 0.55);
+  --accent: #5ee1d5;
+  --accent-dim: rgba(94, 225, 213, 0.15);
+  --danger: #ff6b8a;
+  --radius-lg: 20px;
+  --radius-md: 12px;
+  --shadow-glow: 0 0 80px rgba(94, 225, 213, 0.08);
+  /* 登录 / 注册等表单输入框背景 */
+  --auth-input-bg: rgba(7, 9, 15, 0.62);
+  --auth-input-bg-muted: rgba(7, 9, 15, 0.78);
+
+  --chat-shell-bg: #1a1a1a;
+  --chat-fg: #e8e8e8;
+  --chat-sidebar-bg: #141414;
+  --chat-border: rgba(255, 255, 255, 0.06);
+  --chat-border-strong: rgba(255, 255, 255, 0.1);
+  --chat-topbar-bg: rgba(26, 26, 26, 0.92);
+  --chat-muted: rgba(255, 255, 255, 0.55);
+  --chat-muted-2: rgba(255, 255, 255, 0.45);
+  --chat-muted-3: rgba(255, 255, 255, 0.38);
+  --chat-muted-4: rgba(255, 255, 255, 0.35);
+  --chat-btn-bg: rgba(255, 255, 255, 0.06);
+  --chat-btn-bg-hover: rgba(255, 255, 255, 0.1);
+  --chat-panel: #242424;
+  --chat-panel-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  --chat-bubble-bg: rgba(255, 255, 255, 0.04);
+  --chat-bubble-border: rgba(255, 255, 255, 0.06);
+  --chat-user-bubble-bg: rgba(94, 225, 213, 0.07);
+  --chat-user-bubble-border: rgba(94, 225, 213, 0.22);
+  --chat-profile-border: rgba(255, 255, 255, 0.1);
+  --chat-profile-bg: rgba(255, 255, 255, 0.05);
+  --chat-link-accent-bg: rgba(94, 225, 213, 0.14);
+  --chat-link-accent-fg: #5ee1d5;
+  --chat-danger-bg: rgba(255, 80, 120, 0.12);
+  --chat-danger-fg: #ff8fa8;
+  --chat-send-fg: #061018;
+  --chat-send-bg-start: #5ee1d5;
+  --chat-send-bg-end: #42cfc3;
+  --chat-avatar-gradient-start: #4ad4c8;
+  --chat-avatar-gradient-end: #3aa89f;
+  --chat-mode-on-bg: rgba(255, 255, 255, 0.1);
+  --chat-input-fg: #eee;
+  --chat-sidebar-close: rgba(255, 255, 255, 0.45);
+  --chat-backdrop: rgba(0, 0, 0, 0.45);
+  --chat-drawer-shadow: 8px 0 32px rgba(0, 0, 0, 0.35);
+  --chat-fg-strong: #fff;
+  --chat-toolbar-divider: rgba(255, 255, 255, 0.05);
+
+  /* 对话页：聚焦光晕、粒子、流动背景、空状态玻璃卡 */
+  --accent-glow:
+    0 0 0 1px color-mix(in srgb, var(--chat-link-accent-fg) 24%, transparent),
+    0 0 28px color-mix(in srgb, var(--chat-link-accent-fg) 42%, transparent),
+    0 0 64px color-mix(in srgb, var(--chat-link-accent-fg) 16%, transparent);
+  --chat-flow-bg-base:
+    radial-gradient(
+      ellipse 130% 88% at 50% -28%,
+      color-mix(in srgb, var(--chat-link-accent-fg) 16%, transparent) 0%,
+      transparent 58%
+    ),
+    linear-gradient(
+      168deg,
+      color-mix(in srgb, var(--chat-shell-bg) 100%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel) 35%, var(--chat-shell-bg)) 100%
+    );
+  --chat-empty-orbit-glow: color-mix(in srgb, var(--chat-link-accent-fg) 13%, transparent);
+  --chat-empty-dot: color-mix(in srgb, var(--chat-link-accent-fg) 36%, transparent);
+  --chat-empty-card-bg: color-mix(in srgb, var(--chat-panel) 48%, transparent);
+  --chat-empty-card-border: color-mix(in srgb, var(--chat-border-strong) 65%, transparent);
+  --chat-empty-card-blur: 20px;
+  --chat-empty-card-shadow-1: var(--chat-panel-shadow);
+  --chat-empty-card-shadow-2: 0 0 0 1px color-mix(in srgb, var(--chat-fg-strong) 7%, transparent) inset;
+  --chat-empty-card-inner-glow: 0 0 52px color-mix(in srgb, var(--chat-link-accent-fg) 11%, transparent) inset;
+  --chat-dock-stop-shadow: 0 6px 22px color-mix(in srgb, var(--chat-danger-fg) 28%, transparent);
+  --chat-dock-stop-glow: 0 0 22px color-mix(in srgb, var(--chat-danger-fg) 32%, transparent);
+
+  /* 图片创作工作台：品牌青绿（与对话页 teal 区分） */
+  --ig-brand: #10b981;
+  --ig-brand-hover: #34d399;
+  --ig-brand-soft: color-mix(in srgb, #10b981 22%, transparent);
+  --ig-brand-softer: color-mix(in srgb, #10b981 12%, transparent);
+  --ig-brand-border: color-mix(in srgb, #10b981 45%, transparent);
+  --ig-glass-bg: color-mix(in srgb, var(--chat-panel) 82%, transparent);
+  --ig-glass-border: color-mix(in srgb, var(--chat-border-strong) 70%, transparent);
+  --ig-send-fg: #042f2e;
+  /* 图片创作：主工作区底色（与对话流画布同源渐变，保证左中右 + 底栏一体） */
+  --ig-workspace-bg: var(--chat-flow-bg-base);
+  /* 图片创作：右栏独立深色表面（与中央渐变区分层次） */
+  --ig-panel-surface: #0d0d0f;
+  --ig-panel-border: rgba(255, 255, 255, 0.06);
+  /* 图片创作：面板 / 轨道 / 输入区表面（与对话深色毛玻璃对齐） */
+  --ig-rail-bg: #0d0d0f;
+  --ig-panel-bg: #0d0d0f;
+  --ig-input-surface: #141416;
+  --ig-card-fill: rgba(255, 255, 255, 0.03);
+  --ig-divider-soft: rgba(255, 255, 255, 0.06);
+  --ig-tool-default-icon: rgba(255, 255, 255, 0.5);
+  --ig-muted-40: rgba(255, 255, 255, 0.4);
+  --ig-muted-50: rgba(255, 255, 255, 0.5);
+  --ig-muted-60: rgba(255, 255, 255, 0.6);
+
+  color-scheme: dark;
+}
+
+/**
+ * 与 html[data-theme="dark"] 同步：自定义属性继承到整页。
+ */
+:root {
+  font-family:
+    'Plus Jakarta Sans',
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* 避免 iOS/Android 在横竖屏或窄栏里擅自放大部分文字，造成与页面其它区域字号不一致 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: clip;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: inherit;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+  max-width: 100%;
+}
+
+#app {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+/* 防止媒体与表格撑破窄屏布局 */
+img,
+video,
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: var(--accent);
+}
