@@ -74,17 +74,20 @@ uigpt:
     # 图片创作 · 提示词优化（/v1/chat/completions 纯文本）；默认同 vision-model
     prompt-optimize-model: ${APIYI_PROMPT_OPTIMIZE_MODEL:}
     prompt-optimize-max-tokens: ${APIYI_PROMPT_OPTIMIZE_MAX_TOKENS:640}
+    # Nano Banana 生图前：家装向英文 JSON 提示词优化（与 prompt-optimize-model 共用；图片工作台固定执行，下列开关仅兼容旧配置）
+    interior-prompt-optimize-before-generate: ${APIYI_INTERIOR_PROMPT_BEFORE_GEN:true}
+    interior-prompt-optimize-max-tokens: ${APIYI_INTERIOR_PROMPT_MAX_TOKENS:1536}
     # 识图预分析 HTTP 读超时（秒），与文生图 RestClient 分离，避免异常慢响应堵死首包
     vision-read-timeout-seconds: ${APIYI_VISION_READ_TIMEOUT_SECONDS:18}
     # 文生图 / 图像编辑等（apiYiRestClient）HTTP 读超时（秒）
     generation-read-timeout-seconds: ${APIYI_GENERATION_READ_TIMEOUT_SECONDS:100}
-    # true：末条用户消息含参考图即并入主模型多模态（避免「识图预检 + 主对话」两次调用）；false：先走识图摘要再对话
+    # 已废弃：对话含参考图时始终并入主模型多模态，不再先走识图摘要（保留键以免旧部署 env 报错）
     vision-inline-multimodal: ${APIYI_VISION_INLINE_MULTIMODAL:true}
   # 知识库文件导入：复杂句经 LLM 改写时的 HTTP 读超时（秒）；0 表示不设有效上限（内部约 365 天）
   knowledge-import:
     llm-read-timeout-seconds: ${UIGPT_KNOWLEDGE_IMPORT_LLM_TIMEOUT:0}
 
-  # 向量知识库（Qdrant + OpenAI 兼容 embeddings）。POST /api/chat、/api/chat/stream 不注入检索；文生图等仍用 augmentPromptForImage。
+  # 向量知识库（Qdrant + OpenAI 兼容 embeddings）。图片工作台 /api/image-studio 作图固定请求 RAG 注入（仍受 enabled 与向量管道是否配全约束；未命中则不影响出图）。
   # 知识库管理：列表读 MySQL（无单独「列表↔库」同步）；写入时先 upsert Qdrant 再存库，见 KnowledgeDocumentService。
   # 首次建表：在 MySQL 执行 classpath 资源 db/knowledge_documents.mysql.sql（仓库路径 backend/src/main/resources/db/knowledge_documents.mysql.sql）。
   rag:

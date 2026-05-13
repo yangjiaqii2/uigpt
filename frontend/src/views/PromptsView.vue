@@ -264,9 +264,6 @@ function formatUpdated(iso) {
       <div class="prm-head-row">
         <div>
           <h1 class="prm-title">提示词</h1>
-          <p class="prm-desc">
-            全局共享的常用提示词；超级管理员（privilege=2）可维护内容，其他用户点击卡片即可复制正文到剪贴板。
-          </p>
         </div>
         <button
           v-if="isSuperAdmin"
@@ -403,18 +400,10 @@ function formatUpdated(iso) {
 }
 
 .prm-title {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 1.35rem;
   font-weight: 700;
   color: var(--chat-fg-strong, #e8ecf5);
-}
-
-.prm-desc {
-  margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.55;
-  color: var(--chat-muted, #9aa3b2);
-  max-width: 640px;
 }
 
 .prm-toast {

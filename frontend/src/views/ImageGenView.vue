@@ -56,7 +56,7 @@ let genInterval = null
 /** @type {AbortController | null} */
 let genAbortController = null
 
-const panelCollapsed = ref(false)
+const panelCollapsed = ref(true)
 
 const aspects = [
   { id: '1:1', label: '1:1', w: 1, h: 1 },

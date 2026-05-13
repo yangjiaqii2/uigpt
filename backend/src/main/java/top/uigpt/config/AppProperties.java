@@ -152,8 +152,15 @@ public class AppProperties {
         private int promptOptimizeMaxTokens = 640;
 
         /**
-         * 末条用户消息含参考图时，是否以 OpenAI 多模态格式直接并入主对话（省去单独的识图摘要请求，避免「识图 + 主对话」两次调用）。
-         * 关闭则恢复「先 vision 模型摘要 → 再主模型」。
+         * 历史兼容：YAML/环境可保留；图片工作台已固定执行家装 JSON 提示词优化（APIYi 可用时），不再读取本开关。
+         */
+        private boolean interiorPromptOptimizeBeforeGenerate = true;
+
+        /** 家装 JSON 提示词优化的 {@code max_tokens}，独立于 {@link #promptOptimizeMaxTokens} */
+        private int interiorPromptOptimizeMaxTokens = 1536;
+
+        /**
+         * 历史兼容字段：YAML/环境仍可配置；对话含参考图时已固定走内联多模态主请求，业务代码不再读取本开关。
          */
         private boolean visionInlineMultimodal = true;
 

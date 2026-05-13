@@ -8,6 +8,7 @@ import {
   adminRagGetDocument,
   adminRagCreateDocument,
   adminRagDeleteDocument,
+  adminRagBatchDeleteDocuments,
 } from '../api/ragAdmin'
 import { getAxiosErrorMessage } from '../utils/httpError'
 
@@ -40,10 +41,28 @@ const importInputRef = ref(null)
 const deleteConfirmOpen = ref(false)
 /** @type {import('vue').Ref<{ id: string, title: string | null, preview: string } | null>} */
 const deleteTargetRow = ref(null)
+/** 非空时表示批量删除确认中（与 deleteTargetRow 互斥） */
+const deleteDialogBatchIds = ref([])
 const deleteCancelBtnRef = ref(null)
 const deleteSubmitting = ref(false)
 
+/** 跨页保留勾选，用于批量删除 */
+const selectedIds = ref([])
+
 const importBusy = computed(() => kbImport.busy)
+
+const pageAllSelected = computed(() => {
+  const ids = rows.value.map((r) => r.id)
+  return ids.length > 0 && ids.every((id) => selectedIds.value.includes(id))
+})
+
+const pageSomeSelected = computed(() => {
+  const ids = rows.value.map((r) => r.id)
+  const n = ids.filter((id) => selectedIds.value.includes(id)).length
+  return n > 0 && n < ids.length
+})
+
+const selectedCount = computed(() => selectedIds.value.length)
 
 const canPrev = computed(() => page.value > 0)
 const canNext = computed(() => page.value < totalPages.value - 1)
@@ -179,6 +198,14 @@ function closePreview() {
 
 function openDeleteConfirm(row) {
   deleteTargetRow.value = row
+  deleteDialogBatchIds.value = []
+  deleteConfirmOpen.value = true
+}
+
+function openBatchDeleteConfirm() {
+  if (!selectedIds.value.length) return
+  deleteTargetRow.value = null
+  deleteDialogBatchIds.value = [...selectedIds.value]
   deleteConfirmOpen.value = true
 }
 
@@ -186,11 +213,38 @@ function cancelDeleteDialog() {
   if (deleteSubmitting.value) return
   deleteConfirmOpen.value = false
   deleteTargetRow.value = null
+  deleteDialogBatchIds.value = []
 }
 
 async function confirmDeleteKnowledge() {
+  if (!deleteConfirmOpen.value || deleteSubmitting.value) return
+  const batchIds = deleteDialogBatchIds.value
+  if (batchIds.length) {
+    deleteSubmitting.value = true
+    error.value = ''
+    try {
+      const { data } = await adminRagBatchDeleteDocuments(batchIds)
+      const n = data?.deleted ?? 0
+      const miss = Array.isArray(data?.notFound) ? data.notFound.length : 0
+      let msg = `已删除 ${n} 条`
+      if (miss > 0) msg += `（${miss} 个 id 不在库中）`
+      toast.value = msg
+      deleteConfirmOpen.value = false
+      deleteDialogBatchIds.value = []
+      clearRowSelection()
+      await loadList()
+      setTimeout(() => {
+        toast.value = ''
+      }, 3500)
+    } catch (e) {
+      error.value = getAxiosErrorMessage(e)
+    } finally {
+      deleteSubmitting.value = false
+    }
+    return
+  }
   const row = deleteTargetRow.value
-  if (!row?.id || !deleteConfirmOpen.value) return
+  if (!row?.id) return
   deleteSubmitting.value = true
   error.value = ''
   try {
@@ -198,6 +252,7 @@ async function confirmDeleteKnowledge() {
     toast.value = '已删除'
     deleteConfirmOpen.value = false
     deleteTargetRow.value = null
+    selectedIds.value = selectedIds.value.filter((id) => id !== row.id)
     await loadList()
     setTimeout(() => {
       toast.value = ''
@@ -223,6 +278,35 @@ async function onImportPick(e) {
   void kbImport.runImport(arr)
 }
 
+function isRowSelected(id) {
+  return selectedIds.value.includes(id)
+}
+
+function toggleRowSelect(id) {
+  const i = selectedIds.value.indexOf(id)
+  const next = [...selectedIds.value]
+  if (i >= 0) next.splice(i, 1)
+  else next.push(id)
+  selectedIds.value = next
+}
+
+function toggleSelectPage() {
+  const ids = rows.value.map((r) => r.id)
+  if (!ids.length) return
+  const allOn = ids.every((id) => selectedIds.value.includes(id))
+  const set = new Set(selectedIds.value)
+  if (allOn) {
+    ids.forEach((id) => set.delete(id))
+  } else {
+    ids.forEach((id) => set.add(id))
+  }
+  selectedIds.value = [...set]
+}
+
+function clearRowSelection() {
+  selectedIds.value = []
+}
+
 function displayTitle(row) {
   const t = row.title
   if (t != null && String(t).trim() !== '') return String(t).trim()
@@ -234,14 +318,6 @@ function displayTitle(row) {
   <div class="kb">
     <header class="kb-head">
       <h1 class="kb-title">知识库</h1>
-      <p class="kb-desc">
-        已取消列表与 MySQL 元数据之间的单独同步：列表与详情直接读库。每次新增或导入时，保存流程内先向量化并写入
-        Qdrant，再落库 MySQL（库写失败会尝试删除对应向量点）。对话检索需在服务端配置
-        <code class="kb-code">UIGPT_RAG_*</code>（见 <code class="kb-code">application.yml</code> 的
-        <code class="kb-code">uigpt.rag</code>）。首次使用前请在 MySQL 执行
-        <code class="kb-code">backend/src/main/resources/db/knowledge_documents.mysql.sql</code>（运行时 classpath
-        为 <code class="kb-code">db/knowledge_documents.mysql.sql</code>）。
-      </p>
     </header>
 
     <p v-if="toast" class="kb-toast" role="status">{{ toast }}</p>
@@ -263,9 +339,21 @@ function displayTitle(row) {
             @change="onImportPick"
           />
           <button type="button" class="kb-btn" :disabled="loading" @click="loadList">刷新</button>
+          <button
+            type="button"
+            class="kb-btn kb-btn-danger"
+            :disabled="!selectedCount || deleteSubmitting"
+            @click="openBatchDeleteConfirm"
+          >
+            批量删除{{ selectedCount ? `（${selectedCount}）` : '' }}
+          </button>
+          <button type="button" class="kb-btn kb-btn-muted" :disabled="!selectedCount" @click="clearRowSelection">
+            清除勾选
+          </button>
         </div>
         <div class="kb-toolbar-meta">
           共 <strong>{{ totalElements }}</strong> 条
+          <span v-if="selectedCount" class="kb-toolbar-sel">已选 {{ selectedCount }} 条</span>
         </div>
       </div>
 
@@ -274,6 +362,16 @@ function displayTitle(row) {
         <table v-else class="kb-table">
           <thead>
             <tr>
+              <th class="kb-th-check" scope="col">
+                <input
+                  type="checkbox"
+                  class="kb-chk"
+                  title="全选本页"
+                  :checked="pageAllSelected"
+                  :indeterminate="pageSomeSelected"
+                  @change="toggleSelectPage"
+                />
+              </th>
               <th class="kb-th-title">标题</th>
               <th>摘要</th>
               <th class="kb-th-time">创建时间</th>
@@ -282,6 +380,14 @@ function displayTitle(row) {
           </thead>
           <tbody>
             <tr v-for="row in rows" :key="row.id">
+              <td class="kb-td-check">
+                <input
+                  type="checkbox"
+                  class="kb-chk"
+                  :checked="isRowSelected(row.id)"
+                  @change="toggleRowSelect(row.id)"
+                />
+              </td>
               <td class="kb-td-title">{{ displayTitle(row) }}</td>
               <td class="kb-td-preview">{{ row.preview }}</td>
               <td class="kb-td-time">{{ row.createdAt }}</td>
@@ -291,7 +397,7 @@ function displayTitle(row) {
               </td>
             </tr>
             <tr v-if="!rows.length">
-              <td colspan="4" class="kb-empty">暂无条目，请点击「新增」或「导入」。</td>
+              <td colspan="5" class="kb-empty">暂无条目，请点击「新增」或「导入」。</td>
             </tr>
           </tbody>
         </table>
@@ -362,9 +468,16 @@ function displayTitle(row) {
         >
           <div class="prm-del-backdrop" @click="cancelDeleteDialog" />
           <div class="prm-del-center">
-            <div class="prm-del-panel" @click.stop>
-              <h2 id="kb-del-title" class="prm-del-title">删除知识</h2>
-              <p id="kb-del-desc" class="prm-del-desc">
+            <div class="prm-del-panel prm-del-panel--batch" @click.stop>
+              <h2 id="kb-del-title" class="prm-del-title">
+                {{ deleteDialogBatchIds.length ? '批量删除知识' : '删除知识' }}
+              </h2>
+              <p v-if="deleteDialogBatchIds.length" id="kb-del-desc" class="prm-del-desc">
+                将从列表与向量库中永久移除已选的
+                <strong class="kb-del-em">{{ deleteDialogBatchIds.length }}</strong>
+                条记录，操作不可撤销。请确认是否继续。
+              </p>
+              <p v-else id="kb-del-desc" class="prm-del-desc">
                 将从列表与向量库中永久移除
                 <strong class="kb-del-em">{{
                   deleteTargetRow ? displayTitle(deleteTargetRow) : '—'
@@ -414,18 +527,10 @@ function displayTitle(row) {
 }
 
 .kb-title {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
   font-size: 1.35rem;
   font-weight: 700;
   color: var(--chat-fg-strong, #e8ecf5);
-}
-
-.kb-desc {
-  margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.55;
-  color: var(--chat-muted, #9aa3b2);
-  max-width: 900px;
 }
 
 .kb-code {
@@ -504,6 +609,34 @@ function displayTitle(row) {
 .kb-btn--primary {
   border-color: color-mix(in srgb, var(--accent, #5ee1d5) 45%, transparent);
   background: color-mix(in srgb, var(--accent, #5ee1d5) 18%, transparent);
+}
+
+.kb-btn-danger {
+  border-color: color-mix(in srgb, var(--danger, #ff6b8a) 45%, transparent);
+  color: var(--danger, #ff6b8a);
+}
+
+.kb-btn-muted {
+  opacity: 0.85;
+}
+
+.kb-toolbar-sel {
+  margin-left: 12px;
+  font-weight: 500;
+  color: var(--accent, #5ee1d5);
+}
+
+.kb-th-check,
+.kb-td-check {
+  width: 44px;
+  vertical-align: middle;
+}
+
+.kb-chk {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent, #5ee1d5);
 }
 
 .kb-table-wrap {
@@ -769,6 +902,10 @@ function displayTitle(row) {
     inset 0 1px 0 color-mix(in srgb, var(--chat-fg-strong, #fff) 8%, transparent);
   padding: 22px 22px 18px;
   box-sizing: border-box;
+}
+
+.prm-del-panel--batch {
+  width: min(100%, 440px);
 }
 
 .prm-del-title {

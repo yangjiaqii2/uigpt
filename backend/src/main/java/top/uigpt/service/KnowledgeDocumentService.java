@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
+import top.uigpt.dto.RagDocumentBatchDeleteResponse;
 import top.uigpt.dto.RagDocumentDetailResponse;
 import top.uigpt.dto.RagDocumentListItemResponse;
 import top.uigpt.dto.RagDocumentPageResponse;
@@ -18,9 +19,12 @@ import top.uigpt.repository.KnowledgeDocumentRepository;
 import java.nio.charset.StandardCharsets;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -28,9 +32,11 @@ import java.util.UUID;
 public class KnowledgeDocumentService {
 
     private static final int PREVIEW_MAX = 200;
-    private static final int MAX_CHUNKS_PER_FILE = 50;
+    /** 单文件 chunk 上限（chunk 约 200～300 字后条数增多，适当放宽） */
+    private static final int MAX_CHUNKS_PER_FILE = 120;
     private static final int MAX_IMPORT_TOTAL = 200;
     private static final int MAX_FILES = 10;
+    private static final int BATCH_DELETE_MAX = 200;
     private static final DateTimeFormatter ISO_LDT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     private final KnowledgeDocumentRepository repository;
@@ -106,6 +112,50 @@ public class KnowledgeDocumentService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
         repository.deleteByPointId(pid);
+    }
+
+    /**
+     * 按 pointId 批量删除：仅删除库中存在的行；先删 Qdrant 再删 MySQL，与 {@link #deleteByPointId(String)} 一致。
+     *
+     * @return 已删除条数及请求中不存在的 id（不影响其余条目的删除）
+     */
+    @Transactional
+    public RagDocumentBatchDeleteResponse deleteByPointIds(List<String> rawPointIds) {
+        if (rawPointIds == null || rawPointIds.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "未选择任何条目");
+        }
+        LinkedHashSet<String> unique = new LinkedHashSet<>();
+        for (String raw : rawPointIds) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            unique.add(raw.strip());
+        }
+        if (unique.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pointId 无效");
+        }
+        if (unique.size() > BATCH_DELETE_MAX) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "一次最多删除 " + BATCH_DELETE_MAX + " 条");
+        }
+        List<String> requested = new ArrayList<>(unique);
+        List<KnowledgeDocument> found = repository.findAllByPointIdIn(requested);
+        Set<String> foundIds =
+                found.stream().map(KnowledgeDocument::getPointId).collect(Collectors.toSet());
+        List<String> notFound =
+                requested.stream().filter(id -> !foundIds.contains(id)).collect(Collectors.toList());
+        List<String> toRemove =
+                found.stream().map(KnowledgeDocument::getPointId).collect(Collectors.toList());
+        if (toRemove.isEmpty()) {
+            return RagDocumentBatchDeleteResponse.builder().deleted(0).notFound(notFound).build();
+        }
+        try {
+            ragService.deleteKnowledgePoints(toRemove);
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+        repository.deleteAllInBatch(found);
+        return RagDocumentBatchDeleteResponse.builder().deleted(toRemove.size()).notFound(notFound).build();
     }
 
     /** 兼容旧接口：每条创建 MySQL + Qdrant。 */

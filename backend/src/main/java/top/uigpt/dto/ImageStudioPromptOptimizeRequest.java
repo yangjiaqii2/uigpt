@@ -25,7 +25,7 @@ public class ImageStudioPromptOptimizeRequest {
     /** 创作介质：{@code video} 时使用视频提示词优化系统提示；省略或非 video 为图片工作台 */
     private String medium = "";
 
-    /** 默认 true：优化前按 {@link #prompt} 注入知识库片段；传 false 可关闭。 */
+    /** 兼容字段：服务端已固定启用 RAG；传 false 亦会被忽略。 */
     private Boolean useRag = Boolean.TRUE;
 
     @Size(max = 128, message = "ragCollection 过长")

@@ -1,2 +1,6 @@
 docker/server.env
 docker/qdrant.env
+
+# 前端本地环境（版本见 VITE_APP_VERSION，勿提交）
+frontend/.env
+frontend/.env.local

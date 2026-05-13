@@ -2,7 +2,6 @@ package top.uigpt.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
-import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 /** 图片工作台 · Nano Banana Pro 文生图 */
@@ -24,7 +23,7 @@ public class ImageStudioTextRequest {
     private String imageSize = "2K";
 
     /**
-     * 默认 true：服务端启用知识库时，按 {@link #prompt} 做向量检索并将片段拼入作图 prompt；传 false 可关闭。
+     * 兼容字段：服务端图片工作台已固定对作图请求启用 RAG；传 false 亦会被忽略。
      */
     private Boolean useRag = Boolean.TRUE;
 

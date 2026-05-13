@@ -15,7 +15,6 @@ import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
 import top.uigpt.chat.FastFreeformModelFallback;
 import top.uigpt.chat.FastFreeformModelIds;
-import top.uigpt.chat.FastFreeformModelIds;
 import top.uigpt.UserFacingMessages;
 import top.uigpt.config.AppProperties;
 import top.uigpt.dto.ChatMessageDto;
@@ -57,7 +56,7 @@ public class ChatService {
     private static final String ZH_REPLY_SYSTEM_PROMPT =
             "请使用简体中文作答。除非用户明确要求使用其他语言，否则请全程以简体中文回复；代码、专有名词或必要引用可保留外文。";
 
-    /** 用户上传参考图时，可走 API易「识图」预分析后再进入主对话（当前仅自由对话）。 */
+    /** 末条用户含有效参考图时不再走识图预检；本集合仅影响无内联图时 {@link #buildVisionAppendix} 是否尝试摘要（当前仅 freeform）。 */
     private static final Set<String> VISION_PREFLIGHT_SKILL_IDS = Set.of("freeform");
 
     private static final int MAX_VISION_URL_CHARS_TOTAL = 7_000_000;
@@ -403,8 +402,8 @@ public class ChatService {
      *
      * <p>API易自由对话：按模型族优先最强档位依次尝试；连接失败或网关类错误时自动降级下一候选，已向前端输出过正文则不再降级。
      *
-     * @param allowVision 已登录用户为 {@code true} 时：默认将参考图以内联多模态并入主请求；配置项 {@code
-     *     uigpt.api-yi-image.vision-inline-multimodal=false} 时恢复先识图摘要再对话
+     * @param allowVision 已登录用户为 {@code true} 且末条用户消息含参考图时：始终将图片以内联多模态并入主模型请求，不再先调用识图
+     *     摘要接口（避免两次上游调用拖慢首包）。
      */
     public String streamChat(
             ChatRequest request, Consumer<String> onDelta, boolean allowVision, String username) {
@@ -666,16 +665,11 @@ public class ChatService {
     }
 
     /**
-     * 末条用户消息含参考图且开启内联开关时，将图片直接并入主模型多模态请求，避免「识图预检 + 主对话」两次调用。
-     *
-     * <p>不再按 skillId 白名单限制：多模态对话页统一走内联（关闭 {@code uigpt.api-yi-image.vision-inline-multimodal}
-     * 时仍回退为识图摘要路径）。
+     * 末条用户消息含有效参考图 URL 时，将图片直接并入主模型多模态请求，不再先走 {@link #withVisionPreflight}（识图摘要 +
+     * 主对话两次调用）。
      */
     private boolean useVisionInlineMultimodal(ChatRequest request, boolean allowVision) {
         if (!allowVision || request == null) {
-            return false;
-        }
-        if (!appProperties.getApiYiImage().isVisionInlineMultimodal()) {
             return false;
         }
         ChatMessageDto lastUser = findLastUserMessage(request.getMessages());
@@ -819,7 +813,7 @@ public class ChatService {
     }
 
     /**
-     * @param allowVision 已登录用户传 {@code true} 时可先识图摘要（与 {@link #streamChat} 一致）
+     * @param allowVision 已登录用户传 {@code true} 时与 {@link #streamChat} 一致：含图则内联多模态，不再先识图摘要
      * @param username 登录用户名；访客传 {@code null}
      */
     public ChatResponse chat(ChatRequest request, boolean allowVision, String username) {

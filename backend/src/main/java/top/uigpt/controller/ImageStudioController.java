@@ -26,6 +26,7 @@ import top.uigpt.service.ApiYiImageService.NanoBananaInlineImage;
 import top.uigpt.service.ConversationImageService;
 import top.uigpt.service.JwtService;
 import top.uigpt.service.ObjectStorageService;
+import top.uigpt.service.ImageStudioGenerationPipeline;
 import top.uigpt.service.PointsService;
 import top.uigpt.service.RagService;
 
@@ -39,6 +40,9 @@ import java.util.concurrent.CompletableFuture;
  * 沉浸式图片创作工作台：代理 API 易 Nano Banana Pro（{@code gemini-3-pro-image-preview}）文生图 / 图片编辑。
  *
  * <p>需在环境变量中配置 {@code APIYI_API_KEY}；密钥仅存服务端。
+ *
+ * <p>作图 Prompt：拼上下文后依次执行「意图 JSON → RAG 检索 → 英文 Prompt 组装」（{@link ImageStudioGenerationPipeline}），再调用
+ * Gemini {@code :generateContent}。
  */
 @Slf4j
 @RestController
@@ -55,6 +59,7 @@ public class ImageStudioController {
     private final ConversationImageService conversationImageService;
     private final ObjectStorageService objectStorageService;
     private final RagService ragService;
+    private final ImageStudioGenerationPipeline imageStudioGenerationPipeline;
 
     @PostMapping("/nano-banana/text-to-image")
     public ImageStudioGenerateResponse nanoBananaTextToImage(
@@ -69,7 +74,9 @@ public class ImageStudioController {
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
         String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
         String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
-        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
+        String promptForApi =
+                imageStudioGenerationPipeline.buildNanoBananaPrompt(
+                        merged, ragQuery, body.getAspectRatio(), body.getImageSize(), body.getRagCollection());
         byte[] png =
                 apiYiImageService.nanoBananaTextToImage(
                         promptForApi, body.getAspectRatio(), body.getImageSize());
@@ -100,7 +107,9 @@ public class ImageStudioController {
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
         String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
         String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
-        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
+        String promptForApi =
+                imageStudioGenerationPipeline.buildNanoBananaPrompt(
+                        merged, ragQuery, body.getAspectRatio(), body.getImageSize(), body.getRagCollection());
         String aspect = body.getAspectRatio();
         String imageSize = body.getImageSize();
 
@@ -146,7 +155,9 @@ public class ImageStudioController {
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
         String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
         String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
-        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
+        String promptForApi =
+                imageStudioGenerationPipeline.buildNanoBananaPrompt(
+                        merged, ragQuery, body.getAspectRatio(), body.getImageSize(), body.getRagCollection());
         List<NanoBananaInlineImage> list = new ArrayList<>();
         for (ImageStudioEditRequest.InlineImagePart p : body.getImages()) {
             byte[] bytes = decodeInlineBase64(p.getDataBase64());
@@ -183,7 +194,9 @@ public class ImageStudioController {
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
         String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
         String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
-        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
+        String promptForApi =
+                imageStudioGenerationPipeline.buildNanoBananaPrompt(
+                        merged, ragQuery, body.getAspectRatio(), body.getImageSize(), body.getRagCollection());
         List<NanoBananaInlineImage> list = new ArrayList<>();
         for (ImageStudioEditRequest.InlineImagePart p : body.getImages()) {
             byte[] bytes = decodeInlineBase64(p.getDataBase64());
@@ -291,7 +304,7 @@ public class ImageStudioController {
             @Valid @RequestBody ImageStudioPromptOptimizeRequest body) {
         requireUser(authorization);
         String q = body.getPrompt() == null ? "" : body.getPrompt().strip();
-        String forLlm = ragService.augmentPromptForImage(q, q, body.getUseRag(), body.getRagCollection());
+        String forLlm = ragService.augmentPromptForImage(q, q, Boolean.TRUE, body.getRagCollection());
         String optimized =
                 apiYiImageService.optimizeImageStudioPrompt(
                         forLlm,

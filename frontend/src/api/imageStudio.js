@@ -7,7 +7,7 @@ const NB_TIMEOUT_MS = 100_000
  * @param {{ prompt: string, aspectRatio?: string, imageSize?: string }} payload
  */
 export function nanoBananaTextToImage(payload, axiosConfig = {}) {
-  return http.post('/image-studio/nano-banana/text-to-image', payload, {
+  return http.post('/image-studio/nano-banana/text-to-image', { useRag: true, ...payload }, {
     timeout: NB_TIMEOUT_MS,
     ...axiosConfig,
   })
@@ -18,7 +18,7 @@ export function nanoBananaTextToImage(payload, axiosConfig = {}) {
  * @param {{ prompt: string, aspectRatio?: string, imageSize?: string, images: { mimeType?: string, dataBase64: string }[] }} payload
  */
 export function nanoBananaEdit(payload, axiosConfig = {}) {
-  return http.post('/image-studio/nano-banana/edit', payload, {
+  return http.post('/image-studio/nano-banana/edit', { useRag: true, ...payload }, {
     timeout: NB_TIMEOUT_MS,
     ...axiosConfig,
   })

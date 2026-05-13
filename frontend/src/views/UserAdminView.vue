@@ -478,9 +478,6 @@ void load()
     <header class="adm-head">
       <div>
         <h1 class="adm-title">用户管理</h1>
-        <p class="adm-desc">
-          查看、新建、编辑与删除系统用户；角色含普通/付费/超级管理员。访问本页须满足环境变量 UIGPT_ADMIN_USERNAMES 或账号在库中为超级管理员。积分按上海时区（Asia/Shanghai）自然日重置：普通 100/日、付费与超级管理员 2000/日，另加管理员「附加日配额」。
-        </p>
       </div>
       <button type="button" class="adm-btn adm-btn--primary" :disabled="loading || saving" @click="openCreate">
         新建用户
@@ -1000,15 +997,8 @@ void load()
 }
 
 .adm-title {
-  margin: 0 0 6px;
-  font-size: 1.25rem;
-}
-
-.adm-desc {
   margin: 0;
-  font-size: 0.8125rem;
-  color: var(--chat-muted, #9aa3b2);
-  max-width: 720px;
+  font-size: 1.25rem;
 }
 
 .adm-filters {

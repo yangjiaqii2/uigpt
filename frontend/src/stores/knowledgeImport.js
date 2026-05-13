@@ -38,7 +38,7 @@ export const useKnowledgeImportStore = defineStore('knowledgeImport', () => {
     if (!list.length) return
     if (busy.value) return
     busy.value = true
-    flashMessage.value = '知识库正在后台导入…（可切换页面，不影响进度）'
+    flashMessage.value = '已提交导入任务，后台处理中…（可切换页面，不影响进度）'
     lastImportedCount.value = 0
     try {
       const fd = new FormData()

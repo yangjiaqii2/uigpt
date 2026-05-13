@@ -15,6 +15,7 @@ import top.uigpt.dto.ChatMessageDto;
 import top.uigpt.dto.ChatRequest;
 
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestClientException;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -30,6 +31,7 @@ import java.util.Locale;
 @Service
 public class RagService {
 
+    private static final int QDRANT_DELETE_POINTS_CHUNK = 100;
     private static final String RAG_SYSTEM_HEADER =
             "【知识库检索】以下片段来自向量库检索，仅供参考。若与用户问题无关、相互矛盾或不足以回答，请如实说明，勿编造。\n\n";
 
@@ -142,6 +144,49 @@ public class RagService {
         }
     }
 
+    /**
+     * 仅执行作图侧向量检索并返回可拼入 Prompt 的知识块（含固定头）；未启用 RAG、无命中或失败时返回空字符串。
+     *
+     * <p>用于图片工作台三阶段流水线：第二阶段在「意图 JSON」得到 {@code rag_embedding_query} 后再检索。
+     */
+    public String retrieveKnowledgeBlockForImage(
+            String embeddingQueryText, Boolean useRag, String ragCollectionOverride) {
+        if (Boolean.FALSE.equals(useRag)) {
+            return "";
+        }
+        AppProperties.Rag cfg = appProperties.getRag();
+        if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
+            return "";
+        }
+        String collection = resolveCollectionForImage(ragCollectionOverride, cfg);
+        if (collection == null) {
+            return "";
+        }
+        String query = embeddingQueryText == null ? "" : embeddingQueryText.strip();
+        if (query.isBlank()) {
+            return "";
+        }
+        int maxQ = Math.max(256, cfg.getMaxQueryChars());
+        if (query.length() > maxQ) {
+            query = query.substring(0, maxQ);
+        }
+        try {
+            List<Float> vector = embedQuery(cfg, query);
+            if (vector.isEmpty()) {
+                return "";
+            }
+            List<ScoredChunk> chunks = search(cfg, collection, vector);
+            if (chunks.isEmpty()) {
+                return "";
+            }
+            String block = buildContextBlock(chunks);
+            return RAG_SYSTEM_HEADER + block;
+        } catch (Exception e) {
+            log.warn("作图 RAG 仅检索失败: {}", e.getMessage());
+            return "";
+        }
+    }
+
     private String resolveCollectionForImage(String ragCollectionOverride, AppProperties.Rag cfg) {
         if (ragCollectionOverride != null && !ragCollectionOverride.isBlank()) {
             String s = ragCollectionOverride.strip();
@@ -188,7 +233,7 @@ public class RagService {
         putPoint(cfg, collection, pid, vector, payload);
     }
 
-    /** 按点 id 从 Qdrant 删除（幂等：不存在时网关可能仍返回 ok）。 */
+    /** 按点 id 从 Qdrant 删除（幂等：不存在时网关可能仍返回 ok）。大批量时分批请求，避免单次 body 过大或网关限制。 */
     public void deleteKnowledgePoints(List<String> pointIds) {
         if (pointIds == null || pointIds.isEmpty()) {
             return;
@@ -201,29 +246,52 @@ public class RagService {
         if (!validCollectionName(collection)) {
             throw new IllegalStateException("默认集合名无效，请检查 uigpt.rag.collection");
         }
+        List<String> ids = new ArrayList<>();
+        for (String id : pointIds) {
+            if (id != null && !id.isBlank()) {
+                ids.add(id.strip());
+            }
+        }
+        if (ids.isEmpty()) {
+            return;
+        }
         String qRoot = normalizeRoot(cfg.getQdrantUrl());
         assertQdrantRootLooksReasonable(qRoot);
         String enc = UriUtils.encodePathSegment(collection, StandardCharsets.UTF_8);
         String url = qRoot + "/collections/" + enc + "/points/delete?wait=true";
+        for (int i = 0; i < ids.size(); i += QDRANT_DELETE_POINTS_CHUNK) {
+            int end = Math.min(i + QDRANT_DELETE_POINTS_CHUNK, ids.size());
+            deleteQdrantPointsChunk(cfg, url, ids.subList(i, end));
+        }
+    }
+
+    private void deleteQdrantPointsChunk(AppProperties.Rag cfg, String url, List<String> chunk) {
         ObjectNode body = objectMapper.createObjectNode();
         ArrayNode arr = body.putArray("points");
-        for (String id : pointIds) {
-            if (id != null && !id.isBlank()) {
-                arr.add(id.strip());
-            }
-        }
-        if (arr.isEmpty()) {
-            return;
+        for (String id : chunk) {
+            arr.add(id);
         }
         String json = body.toString();
         try {
-            withQdrantAuthHeaders(ragRestClient.post().uri(url), cfg)
+            withQdrantAuthForBody(ragRestClient.post().uri(url), cfg)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(json)
                     .retrieve()
                     .toBodilessEntity();
         } catch (HttpClientErrorException.Unauthorized e) {
             throw mapQdrantUnauthorized(e);
+        } catch (HttpClientErrorException e) {
+            String rb = e.getResponseBodyAsString();
+            if (rb != null && rb.length() > 800) {
+                rb = rb.substring(0, 800) + "…";
+            }
+            throw new IllegalStateException(
+                    "向量库删除失败（HTTP "
+                            + e.getStatusCode().value()
+                            + "）："
+                            + (rb == null || rb.isBlank() ? e.getMessage() : rb));
+        } catch (RestClientException e) {
+            throw new IllegalStateException("向量库删除请求失败: " + e.getMessage(), e);
         }
     }
 
@@ -246,7 +314,7 @@ public class RagService {
         String enc = UriUtils.encodePathSegment(collection, StandardCharsets.UTF_8);
         String url = qRoot + "/collections/" + enc;
         try {
-            withQdrantAuthHeaders(ragRestClient.get().uri(url), cfg).retrieve().toBodilessEntity();
+            withQdrantAuthForHeaders(ragRestClient.get().uri(url), cfg).retrieve().toBodilessEntity();
             log.info("Qdrant 集合已存在: {}", collection);
         } catch (HttpClientErrorException.NotFound e) {
             createQdrantCollectionIfMissing(cfg, qRoot, enc, collection);
@@ -267,7 +335,7 @@ public class RagService {
         vectors.put("distance", "Cosine");
         String json = body.toString();
         try {
-            withQdrantAuthHeaders(ragRestClient.put().uri(url), cfg)
+            withQdrantAuthForBody(ragRestClient.put().uri(url), cfg)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(json)
                     .retrieve()
@@ -415,13 +483,29 @@ public class RagService {
                 e);
     }
 
-    private <T extends RestClient.RequestHeadersSpec<T>> T withQdrantAuthHeaders(T spec, AppProperties.Rag cfg) {
+    /**
+     * Qdrant GET 等无 body 请求：加 api-key 头。与 {@link #withQdrantAuthForBody} 分名，避免重载解析到
+     * {@link RestClient.RequestHeadersSpec} 导致后续无 {@code contentType}。
+     */
+    private RestClient.RequestHeadersSpec<?> withQdrantAuthForHeaders(
+            RestClient.RequestHeadersSpec<?> spec, AppProperties.Rag cfg) {
         String key = cfg.getQdrantApiKey();
         if (key == null || key.isBlank()) {
             return spec;
         }
         String k = key.strip();
         return spec.header("api-key", k).header("Authorization", "Bearer " + k);
+    }
+
+    /** Qdrant POST/PUT JSON：加头后仍可 {@code .contentType().body()}。 */
+    @SuppressWarnings("unchecked")
+    private <T extends RestClient.RequestBodySpec> T withQdrantAuthForBody(T spec, AppProperties.Rag cfg) {
+        String key = cfg.getQdrantApiKey();
+        if (key == null || key.isBlank()) {
+            return spec;
+        }
+        String k = key.strip();
+        return (T) spec.header("api-key", k).header("Authorization", "Bearer " + k);
     }
 
     private String resolveCollectionName(ChatRequest request, AppProperties.Rag cfg) {
@@ -521,7 +605,7 @@ public class RagService {
         JsonNode res;
         try {
             res =
-                    withQdrantAuthHeaders(ragRestClient.post().uri(url), cfg)
+                    withQdrantAuthForBody(ragRestClient.post().uri(url), cfg)
                             .contentType(MediaType.APPLICATION_JSON)
                             .body(json)
                             .retrieve()
@@ -585,7 +669,7 @@ public class RagService {
         body.putArray("points").add(point);
         String json = body.toString();
         try {
-            withQdrantAuthHeaders(ragRestClient.put().uri(url), cfg)
+            withQdrantAuthForBody(ragRestClient.put().uri(url), cfg)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(json)
                     .retrieve()

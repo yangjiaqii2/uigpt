@@ -304,6 +304,195 @@ public class ApiYiImageService {
         return Math.min(2048, Math.max(128, n));
     }
 
+    private int interiorPromptOptimizeMaxTokensResolved() {
+        int n = appProperties.getApiYiImage().getInteriorPromptOptimizeMaxTokens();
+        return Math.min(4096, Math.max(256, n));
+    }
+
+    /**
+     * 第一阶段：从合并后的用户输入解析结构化意图 JSON（含 {@code rag_embedding_query} 供向量检索）。未配 API 或失败时返回兜底
+     * JSON。
+     */
+    public String imageStudioPhase1IntentJson(String merged, String aspectRatio, String imageSize) {
+        String m = merged == null ? "" : merged.strip();
+        if (m.isEmpty()) {
+            return fallbackIntentJson("");
+        }
+        if (!isReady()) {
+            return fallbackIntentJson(m);
+        }
+        final int maxIn = 8000;
+        if (m.length() > maxIn) {
+            m = m.substring(0, maxIn);
+        }
+        String ar = aspectRatio == null || aspectRatio.isBlank() ? "1:1" : aspectRatio.strip();
+        String sz = imageSize == null || imageSize.isBlank() ? "2K" : imageSize.strip();
+        String user =
+                "【出图参数】画幅比例："
+                        + ar
+                        + "；出图分辨率档："
+                        + sz
+                        + "\n\n【用户合并输入】\n"
+                        + m;
+        String raw =
+                chatCompletionImageStudio(
+                        ImageStudioIntentPrompts.PHASE1_INTENT_SYSTEM,
+                        user,
+                        Math.min(1024, Math.max(256, interiorPromptOptimizeMaxTokensResolved() / 2)),
+                        0.25);
+        if (raw == null || raw.isBlank()) {
+            return fallbackIntentJson(m);
+        }
+        String cleaned = sanitizeOptimizedPrompt(raw);
+        try {
+            String json = extractFirstJsonObject(cleaned);
+            JsonNode n = objectMapper.readTree(json);
+            String rq = n.path("rag_embedding_query").asText("").strip();
+            if (rq.isBlank()) {
+                return fallbackIntentJson(m);
+            }
+            return json;
+        } catch (Exception e) {
+            log.warn("图片工作台第一阶段意图 JSON 解析失败: {}", e.toString());
+            return fallbackIntentJson(m);
+        }
+    }
+
+    /**
+     * 第三阶段：综合意图 JSON + 知识库片段 + 用户原文，输出家装英文 SD 的 JSON（正/负提示合并为一段）。失败时回退为「知识块
+     * + 原文」或原文。
+     */
+    public String imageStudioPhase3FinalPrompt(
+            String merged,
+            String phase1IntentJson,
+            String ragKnowledgeBlock,
+            String aspectRatio,
+            String imageSize) {
+        String m = merged == null ? "" : merged.strip();
+        String intent = phase1IntentJson == null ? "{}" : phase1IntentJson.strip();
+        String rag = ragKnowledgeBlock == null ? "" : ragKnowledgeBlock.strip();
+        if (m.isEmpty()) {
+            return m;
+        }
+        if (!isReady()) {
+            return mergeRagPrefixWithUserText(rag, m);
+        }
+        final int maxIn = 8000;
+        String mCut = m.length() > maxIn ? m.substring(0, maxIn) : m;
+        String sys =
+                InteriorNanoBananaPromptOptimizer.SYSTEM_PROMPT
+                        + ImageStudioIntentPrompts.PHASE3_SYSTEM_APPENDIX;
+        String user =
+                InteriorNanoBananaPromptOptimizer.buildPhase3UserMessage(
+                        mCut, intent, rag, aspectRatio, imageSize);
+        String raw =
+                chatCompletionImageStudio(
+                        sys, user, interiorPromptOptimizeMaxTokensResolved(), 0.35);
+        if (raw == null || raw.isBlank()) {
+            return mergeRagPrefixWithUserText(rag, mCut);
+        }
+        String out = sanitizeOptimizedPrompt(raw);
+        try {
+            String json = extractFirstJsonObject(out);
+            JsonNode n = objectMapper.readTree(json);
+            String pos = n.path("prompt").asText("").strip();
+            String neg = n.path("negative_prompt").asText("").strip();
+            String combined = mergeInteriorPositiveNegative(pos, neg);
+            if (combined.isBlank()) {
+                return mergeRagPrefixWithUserText(rag, mCut);
+            }
+            return combined;
+        } catch (Exception e) {
+            log.warn("图片工作台第三阶段 Prompt 解析失败: {}", e.toString());
+            return mergeRagPrefixWithUserText(rag, mCut);
+        }
+    }
+
+    private static String mergeRagPrefixWithUserText(String ragBlock, String userText) {
+        if (ragBlock == null || ragBlock.isBlank()) {
+            return userText;
+        }
+        return ragBlock + "\n\n" + userText;
+    }
+
+    private String fallbackIntentJson(String mergedSnippet) {
+        try {
+            ObjectNode o = objectMapper.createObjectNode();
+            o.put("room", "living room");
+            o.putArray("style_tags");
+            ArrayNode hints = o.putArray("style_en_hints");
+            hints.add("modern minimalist interior design");
+            o.putArray("material_light_furniture");
+            String c = mergedSnippet == null ? "" : mergedSnippet.strip();
+            if (c.length() > 800) {
+                c = c.substring(0, 800);
+            }
+            o.put("constraints", c);
+            o.put(
+                    "rag_embedding_query",
+                    "modern minimalist living room interior design photorealistic 8k architectural visualization");
+            return objectMapper.writeValueAsString(o);
+        } catch (Exception e) {
+            return "{\"room\":\"living room\",\"style_tags\":[],\"style_en_hints\":[\"modern minimalist interior\"],"
+                    + "\"material_light_furniture\":[],\"constraints\":\"\","
+                    + "\"rag_embedding_query\":\"modern minimalist living room interior design photorealistic\"}";
+        }
+    }
+
+    private String chatCompletionImageStudio(
+            String systemPrompt, String userContent, int maxTokens, double temperature) {
+        if (!isReady()) {
+            return null;
+        }
+        String model = promptOptimizeModelResolved();
+        int maxTok = Math.min(4096, Math.max(64, maxTokens));
+        String apiUrl = baseUrl() + "/v1/chat/completions";
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("model", model);
+        root.put("max_tokens", maxTok);
+        root.put("temperature", temperature);
+        ArrayNode messages = root.putArray("messages");
+        ObjectNode sysTurn = messages.addObject();
+        sysTurn.put("role", "system");
+        sysTurn.put("content", systemPrompt == null ? "" : systemPrompt);
+        ObjectNode userTurn = messages.addObject();
+        userTurn.put("role", "user");
+        userTurn.put("content", userContent == null ? "" : userContent);
+        try {
+            JsonNode response =
+                    apiYiVisionRestClient
+                            .post()
+                            .uri(apiUrl)
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .body(root.toString())
+                            .retrieve()
+                            .body(JsonNode.class);
+            if (response == null) {
+                log.warn("APIYi 图片流水线 chat 响应为空");
+                return null;
+            }
+            JsonNode choices = response.path("choices");
+            if (!choices.isArray() || choices.isEmpty()) {
+                log.warn("APIYi 图片流水线 chat 缺少 choices");
+                return null;
+            }
+            String out =
+                    extractChatCompletionTextContent(choices.get(0).path("message").path("content"));
+            return out == null ? null : out.strip();
+        } catch (RestClientResponseException e) {
+            log.warn(
+                    "APIYi 图片流水线 chat 失败 status={} body={}",
+                    e.getStatusCode(),
+                    e.getResponseBodyAsString());
+            return null;
+        } catch (Exception e) {
+            log.warn("APIYi 图片流水线 chat 异常: {}", e.toString());
+            return null;
+        }
+    }
+
     private static String buildImageStudioOptimizeUserPayload(
             String prompt,
             String toolId,
@@ -346,6 +535,56 @@ public class ApiYiImageService {
             return sb.toString();
         }
         return contentNode.asText("");
+    }
+
+    /** 从模型输出中截取第一个平衡花括号 JSON 对象（忽略前后说明文字）。 */
+    private static String extractFirstJsonObject(String s) {
+        if (s == null) {
+            return "";
+        }
+        int start = s.indexOf('{');
+        if (start < 0) {
+            return s.strip();
+        }
+        int depth = 0;
+        boolean inString = false;
+        boolean escape = false;
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inString) {
+                if (escape) {
+                    escape = false;
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return s.substring(start, i + 1);
+                }
+            }
+        }
+        return s.substring(start);
+    }
+
+    private static String mergeInteriorPositiveNegative(String positive, String negative) {
+        String p = positive == null ? "" : positive.strip();
+        String n = negative == null ? "" : negative.strip();
+        if (p.isEmpty()) {
+            return "";
+        }
+        if (n.isEmpty()) {
+            return p;
+        }
+        return p + "\n\nAvoid / negative guidance:\n" + n;
     }
 
     private static String sanitizeOptimizedPrompt(String raw) {
