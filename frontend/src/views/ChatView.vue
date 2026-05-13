@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { streamChat } from '../api/chat'
@@ -37,7 +38,8 @@ import {
 import { chatTurnPointsCost } from '../constants/pointCosts'
 
 const STORAGE_FAST_FREEFORM_MODEL = 'uigpt_fast_freeform_model_v1'
-const STORAGE_FAST_FREEFORM_DEEP = 'uigpt_fast_freeform_deep_reasoning_v1'
+/** 历史键：深度推理不再持久化，挂载时清除以免旧环境一直为「开」 */
+const STORAGE_FAST_FREEFORM_DEEP_LEGACY = 'uigpt_fast_freeform_deep_reasoning_v1'
 
 function readFastFreeformModelPref() {
   try {
@@ -49,31 +51,20 @@ function readFastFreeformModelPref() {
   return DEFAULT_FAST_FREEFORM_FAMILY
 }
 
-function readFastFreeformDeepPref() {
-  try {
-    if (typeof localStorage === 'undefined') return true
-    const v = localStorage.getItem(STORAGE_FAST_FREEFORM_DEEP)
-    if (v === null || v === '') return true
-    return v === '1'
-  } catch {
-    /* ignore */
-  }
-  return true
-}
-
 /** 稳定 key，供 TransitionGroup 与列表 diff */
 let msgUid = 0
 
 
 const auth = useAuthStore()
+const { token: authToken } = storeToRefs(auth)
 const route = useRoute()
 const router = useRouter()
 
 /** 发往 API易 的对话 model id（已登录用户可选；访客由服务端默认） */
 const fastFreeformModelId = ref(readFastFreeformModelPref())
 
-/** 深度推理（更强推理路由；持久化） */
-const freeformDeepReasoning = ref(readFastFreeformDeepPref())
+/** 深度推理（更强推理路由）；默认关，仅本会话手动开启；刷新或换登录令牌后关 */
+const freeformDeepReasoning = ref(false)
 
 /** 生成接口在 JSON 中返回 `b64_json` 时优先拼 data URL；历史列表仍仅有 imageUrl */
 function displayUrlFromConversationImagePayload(data) {
@@ -329,11 +320,9 @@ watch(fastFreeformModelId, (v) => {
   }
 })
 
-watch(freeformDeepReasoning, (v) => {
-  try {
-    localStorage.setItem(STORAGE_FAST_FREEFORM_DEEP, v ? '1' : '0')
-  } catch {
-    /* ignore */
+watch(authToken, (now, prev) => {
+  if (now && prev !== undefined && now !== prev) {
+    freeformDeepReasoning.value = false
   }
 })
 
@@ -352,6 +341,13 @@ function onDocKeydown(e) {
 }
 
 onMounted(() => {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_FAST_FREEFORM_DEEP_LEGACY)
+    }
+  } catch {
+    /* ignore */
+  }
   if (auth.isAuthenticated) {
     void auth.refreshMe()
   }

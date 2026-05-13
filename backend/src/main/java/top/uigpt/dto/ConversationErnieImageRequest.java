@@ -2,6 +2,7 @@ package top.uigpt.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 @Data
@@ -33,6 +34,14 @@ public class ConversationErnieImageRequest {
 
     /** 前端风格标签，如「写实」 */
     private String styleLabel = "";
+
+    /**
+     * 默认 true：服务端启用知识库时，按 {@link #userMessage} 检索并拼入作图 prompt；传 false 可关闭。
+     */
+    private Boolean useRag = Boolean.TRUE;
+
+    @Size(max = 128, message = "ragCollection 过长")
+    private String ragCollection;
 
     /**
      * 可选画质档（与前端通用参数「标准 / 高清 / 超清」对应）：{@code standard} | {@code hd} |

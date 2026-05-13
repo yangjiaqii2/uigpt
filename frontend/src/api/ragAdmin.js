@@ -36,6 +36,15 @@ export function adminRagDeleteDocument(pointId) {
 }
 
 /**
+ * @param {FormData} formData 已含 files 字段（可为 Blob + 文件名）
+ */
+export function adminRagImportFormData(formData) {
+  return http.post('/admin/rag/documents/import', formData, {
+    timeout: 900_000,
+  })
+}
+
+/**
  * @param {File[]} files
  */
 export function adminRagImportDocuments(files) {
@@ -43,7 +52,5 @@ export function adminRagImportDocuments(files) {
   for (const f of files) {
     fd.append('files', f)
   }
-  return http.post('/admin/rag/documents/import', fd, {
-    timeout: 300_000,
-  })
+  return adminRagImportFormData(fd)
 }

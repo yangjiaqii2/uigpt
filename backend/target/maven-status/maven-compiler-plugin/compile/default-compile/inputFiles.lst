@@ -9,6 +9,7 @@
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/config/DotEnvEnvironmentPostProcessor.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/config/HttpClientConfig.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/config/PasswordEncoderConfig.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/config/RagStartupDiagnostics.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/config/WebConfig.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/AdminPromptTemplateController.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/controller/AdminUserController.java
@@ -105,7 +106,10 @@
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/FreeformPromptLoader.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/InteriorMockupPromptLoader.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/JwtService.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/service/KnowledgeChunkPipeline.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/KnowledgeDocumentService.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/service/KnowledgeDocumentTextExtractor.java
+/home/dataease/uigpt/backend/src/main/java/top/uigpt/service/KnowledgeSentenceOptimizerService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/MeProfileService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/ModelApiKeyCipherService.java
 /home/dataease/uigpt/backend/src/main/java/top/uigpt/service/ObjectStorageService.java

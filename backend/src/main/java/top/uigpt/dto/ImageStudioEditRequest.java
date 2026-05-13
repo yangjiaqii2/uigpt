@@ -23,6 +23,14 @@ public class ImageStudioEditRequest {
 
     @NotEmpty private List<InlineImagePart> images;
 
+    /**
+     * 默认 true：服务端启用知识库时，按 {@link #prompt} 检索并注入；传 false 可关闭。
+     */
+    private Boolean useRag = Boolean.TRUE;
+
+    @Size(max = 128, message = "ragCollection 过长")
+    private String ragCollection;
+
     @Data
     public static class InlineImagePart {
         /** image/jpeg 或 image/png */

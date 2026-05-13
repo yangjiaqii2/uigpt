@@ -2,12 +2,16 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useKnowledgeImportStore } from '../stores/knowledgeImport'
 import ChatProfileDrawer from '../components/chat/ChatProfileDrawer.vue'
 import SiteMailBell from '../components/site-mail/SiteMailBell.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const kbImport = useKnowledgeImportStore()
+
+const kbImportBannerVisible = computed(() => kbImport.busy || Boolean(kbImport.flashMessage?.trim()))
 
 const ROUTE_TITLE_FALLBACK = {
   history: '历史会话',
@@ -134,6 +138,7 @@ function onDocClick(e) {
     e.target.closest?.('.srl-ctx') ||
     e.target.closest?.('.delconv-shell') ||
     e.target.closest?.('.prm-modal-backdrop') ||
+    e.target.closest?.('.prm-del-shell') ||
     e.target.closest?.('.site-mail-wrap') ||
     e.target.closest?.('.sm-shell')
   ) {
@@ -242,6 +247,14 @@ watch(
         </div>
       </header>
       <div class="mod-main-body">
+        <div
+          v-if="kbImportBannerVisible"
+          class="mod-kb-import-banner"
+          role="status"
+          :aria-busy="kbImport.busy"
+        >
+          {{ kbImport.flashMessage }}
+        </div>
         <RouterView />
       </div>
     </main>
@@ -407,6 +420,17 @@ watch(
   overflow: auto;
   display: flex;
   flex-direction: column;
+}
+
+.mod-kb-import-banner {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--chat-fg-strong, #e8ecf5);
+  background: color-mix(in srgb, var(--accent, #5ee1d5) 14%, var(--chat-panel, #242424));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent, #5ee1d5) 28%, transparent);
 }
 
 .mod-topbar {

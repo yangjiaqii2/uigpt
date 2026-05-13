@@ -14,6 +14,9 @@ import top.uigpt.config.AppProperties;
 import top.uigpt.dto.ChatMessageDto;
 import top.uigpt.dto.ChatRequest;
 
+import org.springframework.web.client.HttpClientErrorException;
+
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -51,7 +54,7 @@ public class RagService {
             return request;
         }
         AppProperties.Rag cfg = appProperties.getRag();
-        if (!cfg.isEnabled() || !isConfigured(cfg)) {
+        if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
             return request;
         }
         if (chatPassthrough && !Boolean.TRUE.equals(request.getUseRag())) {
@@ -86,11 +89,76 @@ public class RagService {
         }
     }
 
+    /**
+     * 为文生图 / 图编等接口在发往绘图模型的 prompt 前注入知识库片段（与对话 RAG 同源：embedding + Qdrant）。
+     *
+     * <p>{@code useRag} 为 {@code false} 时直接返回 {@code mergedPromptForApi}；为 {@code null} 或 {@code true} 且全局
+     * RAG 已启用并配全时尝试检索，失败或无命中则原样返回。
+     *
+     * @param mergedPromptForApi 即将送往绘图 API 的完整 prompt（可已含会话摘要等）
+     * @param embeddingQueryText 用于向量检索的短文本，建议用用户本轮指令（如 {@code prompt} / {@code userMessage}）
+     * @param useRag 为 {@code false} 时跳过检索
+     * @param ragCollectionOverride 可选 Qdrant 集合名；非法或空则用配置默认
+     */
+    public String augmentPromptForImage(
+            String mergedPromptForApi,
+            String embeddingQueryText,
+            Boolean useRag,
+            String ragCollectionOverride) {
+        String merged = mergedPromptForApi == null ? "" : mergedPromptForApi;
+        if (Boolean.FALSE.equals(useRag)) {
+            return merged;
+        }
+        AppProperties.Rag cfg = appProperties.getRag();
+        if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
+            return merged;
+        }
+        String collection = resolveCollectionForImage(ragCollectionOverride, cfg);
+        if (collection == null) {
+            return merged;
+        }
+        String query = embeddingQueryText == null ? "" : embeddingQueryText.strip();
+        if (query.isBlank()) {
+            return merged;
+        }
+        int maxQ = Math.max(256, cfg.getMaxQueryChars());
+        if (query.length() > maxQ) {
+            query = query.substring(0, maxQ);
+        }
+        try {
+            List<Float> vector = embedQuery(cfg, query);
+            if (vector.isEmpty()) {
+                return merged;
+            }
+            List<ScoredChunk> chunks = search(cfg, collection, vector);
+            if (chunks.isEmpty()) {
+                return merged;
+            }
+            String block = buildContextBlock(chunks);
+            return RAG_SYSTEM_HEADER + block + "\n\n" + merged;
+        } catch (Exception e) {
+            log.warn("作图 RAG 检索失败，跳过注入: {}", e.getMessage());
+            return merged;
+        }
+    }
+
+    private String resolveCollectionForImage(String ragCollectionOverride, AppProperties.Rag cfg) {
+        if (ragCollectionOverride != null && !ragCollectionOverride.isBlank()) {
+            String s = ragCollectionOverride.strip();
+            if (validCollectionName(s)) {
+                return s;
+            }
+            log.warn("忽略非法 ragCollection: {}", s);
+        }
+        String def = cfg.getCollection() == null ? "" : cfg.getCollection().strip();
+        return validCollectionName(def) ? def : null;
+    }
+
     /** 使用固定点 id 写入 Qdrant：payload 含可选 title、text、created_at（ISO-8601）。 */
     public void upsertKnowledgePoint(String pointId, String title, String text) {
         AppProperties.Rag cfg = appProperties.getRag();
-        if (!cfg.isEnabled() || !isConfigured(cfg)) {
-            throw new IllegalStateException("RAG 未启用或未配全 embedding / Qdrant / 集合名");
+        if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
+            throw new IllegalStateException(ragSetupFailureMessage(cfg));
         }
         String collection = cfg.getCollection() == null ? "" : cfg.getCollection().strip();
         if (!validCollectionName(collection)) {
@@ -126,14 +194,15 @@ public class RagService {
             return;
         }
         AppProperties.Rag cfg = appProperties.getRag();
-        if (!cfg.isEnabled() || !isConfigured(cfg)) {
-            throw new IllegalStateException("RAG 未启用或未配全 embedding / Qdrant / 集合名");
+        if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
+            throw new IllegalStateException(ragSetupFailureMessage(cfg));
         }
         String collection = cfg.getCollection() == null ? "" : cfg.getCollection().strip();
         if (!validCollectionName(collection)) {
             throw new IllegalStateException("默认集合名无效，请检查 uigpt.rag.collection");
         }
         String qRoot = normalizeRoot(cfg.getQdrantUrl());
+        assertQdrantRootLooksReasonable(qRoot);
         String enc = UriUtils.encodePathSegment(collection, StandardCharsets.UTF_8);
         String url = qRoot + "/collections/" + enc + "/points/delete?wait=true";
         ObjectNode body = objectMapper.createObjectNode();
@@ -147,32 +216,139 @@ public class RagService {
             return;
         }
         String json = body.toString();
-        if (cfg.getQdrantApiKey() != null && !cfg.getQdrantApiKey().isBlank()) {
-            ragRestClient
-                    .post()
-                    .uri(url)
-                    .header("api-key", cfg.getQdrantApiKey().strip())
+        try {
+            withQdrantAuthHeaders(ragRestClient.post().uri(url), cfg)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(json)
                     .retrieve()
                     .toBodilessEntity();
-        } else {
-            ragRestClient
-                    .post()
-                    .uri(url)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(json)
-                    .retrieve()
-                    .toBodilessEntity();
+        } catch (HttpClientErrorException.Unauthorized e) {
+            throw mapQdrantUnauthorized(e);
         }
     }
 
-    private static boolean isConfigured(AppProperties.Rag cfg) {
+    /**
+     * 若 RAG 已启用且配置齐全，则在 Qdrant 尚无默认集合时自动创建（Cosine，维度见 {@link AppProperties.Rag#getEmbeddingVectorSize()}）。
+     * 由 {@link top.uigpt.config.RagStartupDiagnostics} 在启动时调用。
+     */
+    public void ensureDefaultQdrantCollection() {
+        AppProperties.Rag cfg = appProperties.getRag();
+        if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
+            return;
+        }
+        String collection = cfg.getCollection() == null ? "" : cfg.getCollection().strip();
+        if (!validCollectionName(collection)) {
+            log.warn("跳过 Qdrant 自动建库：集合名非法 {}", collection);
+            return;
+        }
+        String qRoot = normalizeRoot(cfg.getQdrantUrl());
+        assertQdrantRootLooksReasonable(qRoot);
+        String enc = UriUtils.encodePathSegment(collection, StandardCharsets.UTF_8);
+        String url = qRoot + "/collections/" + enc;
+        try {
+            withQdrantAuthHeaders(ragRestClient.get().uri(url), cfg).retrieve().toBodilessEntity();
+            log.info("Qdrant 集合已存在: {}", collection);
+        } catch (HttpClientErrorException.NotFound e) {
+            createQdrantCollectionIfMissing(cfg, qRoot, enc, collection);
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.warn("无法检查 Qdrant 集合（401），跳过自动建库: {}", e.getMessage());
+        } catch (Exception e) {
+            log.warn("检查 Qdrant 集合是否存在时失败，跳过自动建库: {}", e.getMessage());
+        }
+    }
+
+    private void createQdrantCollectionIfMissing(
+            AppProperties.Rag cfg, String qRoot, String encPathSegment, String collection) {
+        int dim = Math.max(1, cfg.getEmbeddingVectorSize());
+        String url = qRoot + "/collections/" + encPathSegment;
+        ObjectNode body = objectMapper.createObjectNode();
+        ObjectNode vectors = body.putObject("vectors");
+        vectors.put("size", dim);
+        vectors.put("distance", "Cosine");
+        String json = body.toString();
+        try {
+            withQdrantAuthHeaders(ragRestClient.put().uri(url), cfg)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(json)
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("Qdrant 已自动创建集合 {}（向量维度 {}，距离 Cosine）", collection, dim);
+        } catch (HttpClientErrorException.Conflict e) {
+            log.info("Qdrant 集合 {} 已存在（并发创建）", collection);
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.warn("自动创建 Qdrant 集合失败（401）: {}", e.getMessage());
+        } catch (Exception e) {
+            log.error(
+                    "自动创建 Qdrant 集合失败: {}（维度 {}）。请核对 UIGPT_RAG_EMBEDDING_VECTOR_SIZE 与模型是否一致，或手动在 Qdrant 建同名集合。",
+                    collection,
+                    dim,
+                    e);
+        }
+    }
+
+    /**
+     * RAG 向量写入/检索是否具备最小配置：Qdrant、Embedding URL、有效 Bearer（含回退到 APIYi 密钥）、集合名。
+     */
+    private boolean isRagVectorPipelineReady(AppProperties.Rag cfg) {
         String q = cfg.getQdrantUrl() == null ? "" : cfg.getQdrantUrl().strip();
         String embUrl = cfg.getEmbeddingBaseUrl() == null ? "" : cfg.getEmbeddingBaseUrl().strip();
-        String embKey = cfg.getEmbeddingApiKey() == null ? "" : cfg.getEmbeddingApiKey().strip();
+        String embKey = resolveEmbeddingBearer(cfg);
         String col = cfg.getCollection() == null ? "" : cfg.getCollection().strip();
         return !q.isEmpty() && !embUrl.isEmpty() && !embKey.isEmpty() && !col.isEmpty();
+    }
+
+    /**
+     * 优先 uigpt.rag.embedding-api-key；为空或未配置时回退 {@code uigpt.api-yi-image.api-key}（环境变量 APIYI_API_KEY
+     * 等），避免 .env 里写了空 {@code UIGPT_RAG_EMBEDDING_API_KEY=} 导致占位符不再回落到 APIYi。
+     */
+    private String resolveEmbeddingBearer(AppProperties.Rag cfg) {
+        String k = cfg.getEmbeddingApiKey();
+        if (k != null && !k.isBlank()) {
+            return k.strip();
+        }
+        if (appProperties.getApiYiImage() == null) {
+            return "";
+        }
+        String apiYi = appProperties.getApiYiImage().getApiKey();
+        return apiYi == null ? "" : apiYi.strip();
+    }
+
+    /**
+     * 知识库写入失败时返回给管理员的可读说明（对应 {@link #isRagVectorPipelineReady} 与 {@link AppProperties.Rag#enabled}）。
+     */
+    private String ragSetupFailureMessage(AppProperties.Rag cfg) {
+        List<String> missing = new ArrayList<>();
+        if (!cfg.isEnabled()) {
+            missing.add("总开关：设 UIGPT_RAG_ENABLED=true（或 uigpt.rag.enabled=true）");
+        }
+        String q = nz(cfg.getQdrantUrl());
+        if (q.isEmpty()) {
+            missing.add("Qdrant 根地址：UIGPT_RAG_QDRANT_URL（例 http://localhost:6333）");
+        }
+        String embUrl = nz(cfg.getEmbeddingBaseUrl());
+        if (embUrl.isEmpty()) {
+            missing.add("Embedding 根 URL：UIGPT_RAG_EMBEDDING_BASE_URL（须含 /v1，例 https://api.apiyi.com/v1）");
+        }
+        String embKey = resolveEmbeddingBearer(cfg);
+        if (embKey.isEmpty()) {
+            missing.add(
+                    "Embedding Bearer：配置 UIGPT_RAG_EMBEDDING_API_KEY，或与 APIYi 共用 APIYI_API_KEY / uigpt.api-yi-image.api-key");
+        }
+        String col = cfg.getCollection() == null ? "" : cfg.getCollection().strip();
+        if (col.isEmpty()) {
+            missing.add(
+                    "集合名：UIGPT_RAG_COLLECTION（默认 uigpt_kb；启动时会尝试在 Qdrant 自动建库，维度见 UIGPT_RAG_EMBEDDING_VECTOR_SIZE）");
+        } else if (!validCollectionName(col)) {
+            missing.add("集合名格式非法（仅字母数字下划线与短横线，最长 128）：当前 uigpt.rag.collection");
+        }
+        if (missing.isEmpty()) {
+            return "RAG 配置异常，请核对 application.yml 的 uigpt.rag 与环境变量。";
+        }
+        return "RAG 未就绪，请补全：" + String.join("；", missing) + "。";
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s.strip();
     }
 
     private static String normalizeRoot(String url) {
@@ -180,6 +356,72 @@ public class RagService {
             return "";
         }
         return url.strip().replaceAll("/+$", "");
+    }
+
+    /**
+     * 若将 Embedding/OpenAI 网关误填为 Qdrant 地址，会出现 401「Must provide an API key…」等易误判为解析失败。
+     */
+    private static void assertQdrantRootLooksReasonable(String qRoot) {
+        if (qRoot == null || qRoot.isBlank()) {
+            return;
+        }
+        try {
+            URI u = URI.create(qRoot);
+            String host = u.getHost();
+            if (host == null) {
+                return;
+            }
+            String h = host.toLowerCase(Locale.ROOT);
+            String[] llmHosts = {
+                "openai.com",
+                "apiyi.com",
+                "anthropic.com",
+                "groq.com",
+                "deepseek.com",
+                "x.ai",
+                "mistral.ai",
+                "cohere.ai"
+            };
+            for (String s : llmHosts) {
+                if (h.equals(s) || h.endsWith("." + s)) {
+                    throw new IllegalStateException(
+                            "UIGPT_RAG_QDRANT_URL 主机名疑似 LLM/Embedding 服务（"
+                                    + host
+                                    + "），不是 Qdrant。请改为 Qdrant 根地址，例如 http://localhost:6333 或 http://qdrant:6333");
+                }
+            }
+            if (h.contains("dashscope") || h.contains("generativelanguage.googleapis.com")) {
+                throw new IllegalStateException(
+                        "UIGPT_RAG_QDRANT_URL 指向了模型网关而非 Qdrant，请改为 Qdrant 根地址（如 http://localhost:6333）");
+            }
+            if (h.contains("oai.azure.com")) {
+                throw new IllegalStateException(
+                        "UIGPT_RAG_QDRANT_URL 指向了 Azure OpenAI 而非 Qdrant，请改为 Qdrant 根地址（如 http://localhost:6333）");
+            }
+        } catch (IllegalStateException e) {
+            throw e;
+        } catch (Exception ignored) {
+            // 非绝对 URL 等跳过启发式
+        }
+    }
+
+    private static IllegalStateException mapQdrantUnauthorized(HttpClientErrorException.Unauthorized e) {
+        return new IllegalStateException(
+                "向量库返回 401：若 Qdrant 配置了 QDRANT__SERVICE__API_KEY，请在后端设置与之相同的 UIGPT_RAG_QDRANT_API_KEY"
+                        + "（未配置密钥时，Qdrant 也会返回与 OpenAI 网关相似的英文提示，易误判）。"
+                        + " 同时请确认 UIGPT_RAG_QDRANT_URL 指向 Qdrant（如 http://127.0.0.1:6333），勿与 Embedding 的 https://…/v1 混用。"
+                        + " 原始响应: "
+                        + e.getMessage(),
+                e);
+    }
+
+    private <T extends RestClient.RequestHeadersSpec<T>> T withQdrantAuthHeaders(T spec, AppProperties.Rag cfg) {
+        String key = cfg.getQdrantApiKey();
+        if (key == null || key.isBlank()) {
+            return spec;
+        }
+        String k = key.strip();
+        return spec.header("api-key", k).header("Authorization", "Bearer " + k);
     }
 
     private String resolveCollectionName(ChatRequest request, AppProperties.Rag cfg) {
@@ -240,7 +482,7 @@ public class RagService {
                 ragRestClient
                         .post()
                         .uri(url)
-                        .header("Authorization", "Bearer " + cfg.getEmbeddingApiKey().strip())
+                        .header("Authorization", "Bearer " + resolveEmbeddingBearer(cfg))
                         .contentType(MediaType.APPLICATION_JSON)
                         .body(body.toString())
                         .retrieve()
@@ -264,6 +506,7 @@ public class RagService {
 
     private List<ScoredChunk> search(AppProperties.Rag cfg, String collection, List<Float> vector) {
         String qRoot = normalizeRoot(cfg.getQdrantUrl());
+        assertQdrantRootLooksReasonable(qRoot);
         String enc = UriUtils.encodePathSegment(collection, StandardCharsets.UTF_8);
         String url = qRoot + "/collections/" + enc + "/points/search";
         ObjectNode body = objectMapper.createObjectNode();
@@ -275,26 +518,17 @@ public class RagService {
         body.put("limit", topK);
         body.put("with_payload", true);
         String json = body.toString();
-        RestClient.ResponseSpec retrieve;
-        if (cfg.getQdrantApiKey() != null && !cfg.getQdrantApiKey().isBlank()) {
-            retrieve =
-                    ragRestClient
-                            .post()
-                            .uri(url)
-                            .header("api-key", cfg.getQdrantApiKey().strip())
+        JsonNode res;
+        try {
+            res =
+                    withQdrantAuthHeaders(ragRestClient.post().uri(url), cfg)
                             .contentType(MediaType.APPLICATION_JSON)
                             .body(json)
-                            .retrieve();
-        } else {
-            retrieve =
-                    ragRestClient
-                            .post()
-                            .uri(url)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .body(json)
-                            .retrieve();
+                            .retrieve()
+                            .body(JsonNode.class);
+        } catch (HttpClientErrorException.Unauthorized e) {
+            throw mapQdrantUnauthorized(e);
         }
-        JsonNode res = retrieve.body(JsonNode.class);
         JsonNode result = res == null ? null : res.get("result");
         if (result == null || !result.isArray()) {
             return List.of();
@@ -337,6 +571,7 @@ public class RagService {
             List<Float> vector,
             ObjectNode payload) {
         String qRoot = normalizeRoot(cfg.getQdrantUrl());
+        assertQdrantRootLooksReasonable(qRoot);
         String enc = UriUtils.encodePathSegment(collection, StandardCharsets.UTF_8);
         String url = qRoot + "/collections/" + enc + "/points?wait=true";
         ObjectNode point = objectMapper.createObjectNode();
@@ -349,23 +584,14 @@ public class RagService {
         ObjectNode body = objectMapper.createObjectNode();
         body.putArray("points").add(point);
         String json = body.toString();
-        if (cfg.getQdrantApiKey() != null && !cfg.getQdrantApiKey().isBlank()) {
-            ragRestClient
-                    .put()
-                    .uri(url)
-                    .header("api-key", cfg.getQdrantApiKey().strip())
+        try {
+            withQdrantAuthHeaders(ragRestClient.put().uri(url), cfg)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(json)
                     .retrieve()
                     .toBodilessEntity();
-        } else {
-            ragRestClient
-                    .put()
-                    .uri(url)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(json)
-                    .retrieve()
-                    .toBodilessEntity();
+        } catch (HttpClientErrorException.Unauthorized e) {
+            throw mapQdrantUnauthorized(e);
         }
     }
 

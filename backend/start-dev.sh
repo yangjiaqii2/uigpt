@@ -8,6 +8,6 @@ if [[ -f .env ]]; then
   set +a
   echo "[start-dev] 已加载 $(pwd)/.env"
 else
-  echo "[start-dev] 未找到 .env：请执行 cp .env.example .env 并填写密钥（可选仍继续启动）" >&2
+  echo "[start-dev] 未找到 .env：请在 $(pwd)/.env 填写密钥（可选仍继续启动）" >&2
 fi
 exec mvn spring-boot:run "$@"

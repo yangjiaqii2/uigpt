@@ -1,6 +1,6 @@
 import http from './http'
 
-const NB_TIMEOUT_MS = 300_000
+const NB_TIMEOUT_MS = 100_000
 
 /**
  * Nano Banana Pro 文生图（服务端代理 API 易 generateContent）。

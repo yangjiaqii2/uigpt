@@ -27,6 +27,7 @@ import top.uigpt.service.ConversationImageService;
 import top.uigpt.service.JwtService;
 import top.uigpt.service.ObjectStorageService;
 import top.uigpt.service.PointsService;
+import top.uigpt.service.RagService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -53,6 +54,7 @@ public class ImageStudioController {
     private final ApiYiImageService apiYiImageService;
     private final ConversationImageService conversationImageService;
     private final ObjectStorageService objectStorageService;
+    private final RagService ragService;
 
     @PostMapping("/nano-banana/text-to-image")
     public ImageStudioGenerateResponse nanoBananaTextToImage(
@@ -65,7 +67,9 @@ public class ImageStudioController {
                         .findByUsername(username)
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录"));
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
-        String promptForApi = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
+        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
         byte[] png =
                 apiYiImageService.nanoBananaTextToImage(
                         promptForApi, body.getAspectRatio(), body.getImageSize());
@@ -94,7 +98,9 @@ public class ImageStudioController {
                         .findByUsername(username)
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录"));
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
-        String promptForApi = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
+        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
         String aspect = body.getAspectRatio();
         String imageSize = body.getImageSize();
 
@@ -138,7 +144,9 @@ public class ImageStudioController {
                         .findByUsername(username)
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录"));
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
-        String promptForApi = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
+        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
         List<NanoBananaInlineImage> list = new ArrayList<>();
         for (ImageStudioEditRequest.InlineImagePart p : body.getImages()) {
             byte[] bytes = decodeInlineBase64(p.getDataBase64());
@@ -173,7 +181,9 @@ public class ImageStudioController {
                         .findByUsername(username)
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录"));
         int cost = ImageGenerationPointCosts.forNanoBananaImageSize(body.getImageSize());
-        String promptForApi = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String merged = mergeImageSessionContextForApi(body.getPrompt(), body.getImageSessionContext());
+        String ragQuery = body.getPrompt() == null ? "" : body.getPrompt().strip();
+        String promptForApi = ragService.augmentPromptForImage(merged, ragQuery, body.getUseRag(), body.getRagCollection());
         List<NanoBananaInlineImage> list = new ArrayList<>();
         for (ImageStudioEditRequest.InlineImagePart p : body.getImages()) {
             byte[] bytes = decodeInlineBase64(p.getDataBase64());
@@ -280,9 +290,11 @@ public class ImageStudioController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ImageStudioPromptOptimizeRequest body) {
         requireUser(authorization);
+        String q = body.getPrompt() == null ? "" : body.getPrompt().strip();
+        String forLlm = ragService.augmentPromptForImage(q, q, body.getUseRag(), body.getRagCollection());
         String optimized =
                 apiYiImageService.optimizeImageStudioPrompt(
-                        body.getPrompt(),
+                        forLlm,
                         body.getTool(),
                         body.getStyleLabel(),
                         body.getAspectLabel(),

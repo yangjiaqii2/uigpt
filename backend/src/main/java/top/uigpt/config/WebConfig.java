@@ -32,15 +32,34 @@ public class WebConfig implements WebMvcConfigurer {
     }
 
     /**
-     * APIYi 文生图 / 编辑可能耗时较长；单独拉长读超时（默认 300s）。
+     * APIYi 文生图 / 编辑可能耗时较长；读超时见 {@code uigpt.api-yi-image.generation-read-timeout-seconds}（默认 100s）。
      * 与 {@link HttpClientConfig#upstreamChatHttpClient} 共用 {@link HttpClient}，复用连接池。
      */
     @Bean
     @Qualifier("apiYiRestClient")
     public RestClient apiYiRestClient(
-            @Qualifier("upstreamChatHttpClient") HttpClient upstreamChatHttpClient) {
+            @Qualifier("upstreamChatHttpClient") HttpClient upstreamChatHttpClient,
+            @Value("${uigpt.api-yi-image.generation-read-timeout-seconds:100}") int generationReadTimeoutSeconds) {
         JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory(upstreamChatHttpClient);
-        rf.setReadTimeout(Duration.ofSeconds(300));
+        int sec = Math.max(1, generationReadTimeoutSeconds);
+        rf.setReadTimeout(Duration.ofSeconds(sec));
+        return RestClient.builder().requestFactory(rf).build();
+    }
+
+    /**
+     * 知识库复杂句改写：默认不设读超时上限（{@code llm-read-timeout-seconds=0} 时用极大时长）。
+     */
+    @Bean
+    @Qualifier("apiYiKnowledgeChunkRestClient")
+    public RestClient apiYiKnowledgeChunkRestClient(
+            @Qualifier("upstreamChatHttpClient") HttpClient upstreamChatHttpClient,
+            @Value("${uigpt.knowledge-import.llm-read-timeout-seconds:0}") int llmReadTimeoutSeconds) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory(upstreamChatHttpClient);
+        Duration read =
+                llmReadTimeoutSeconds <= 0
+                        ? Duration.ofDays(365)
+                        : Duration.ofSeconds(Math.max(1, llmReadTimeoutSeconds));
+        rf.setReadTimeout(read);
         return RestClient.builder().requestFactory(rf).build();
     }
 

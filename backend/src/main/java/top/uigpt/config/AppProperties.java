@@ -36,6 +36,9 @@ public class AppProperties {
      */
     private Rag rag = new Rag();
 
+    /** 知识库文件导入：复杂句 LLM 改写等 */
+    private KnowledgeImport knowledgeImport = new KnowledgeImport();
+
     /**
      * 解密 {@code chat_models.api_key_cipher} 的主密钥（SHA-256 后作 AES-256 密钥）。
      * 环境变量：{@code UIGPT_MODEL_KEY_MASTER}；须与加密 CLI 使用同一值。
@@ -149,10 +152,15 @@ public class AppProperties {
         private int promptOptimizeMaxTokens = 640;
 
         /**
-         * 参考图是否以 OpenAI 多模态格式直接并入主对话（省去单独的识图摘要请求，显著降低带图场景的首包延迟）。
+         * 末条用户消息含参考图时，是否以 OpenAI 多模态格式直接并入主对话（省去单独的识图摘要请求，避免「识图 + 主对话」两次调用）。
          * 关闭则恢复「先 vision 模型摘要 → 再主模型」。
          */
         private boolean visionInlineMultimodal = true;
+
+        /**
+         * 文生图 / 图像编辑等走 {@code apiYiRestClient} 的 HTTP 读超时（秒），与识图短超时分离。
+         */
+        private int generationReadTimeoutSeconds = 100;
     }
 
     @Data
@@ -221,6 +229,11 @@ public class AppProperties {
         private String embeddingApiKey = "";
         /** 如 {@code text-embedding-3-small}、{@code text-embedding-v4}（以网关为准） */
         private String embeddingModel = "text-embedding-3-small";
+        /**
+         * 与 {@link #embeddingModel} 输出维度一致，用于启动时在 Qdrant 自动建集合。{@code text-embedding-3-small} 一般为 1536；
+         * 若换模型请查网关文档并设 {@code UIGPT_RAG_EMBEDDING_VECTOR_SIZE}。
+         */
+        private int embeddingVectorSize = 1536;
         /** 单次对话检索条数 */
         private int topK = 5;
         /**
@@ -231,5 +244,13 @@ public class AppProperties {
         private int maxQueryChars = 8000;
         /** 访问 Qdrant 与 embedding 的 HTTP 读超时（秒） */
         private int readTimeoutSeconds = 45;
+    }
+
+    @Data
+    public static class KnowledgeImport {
+        /**
+         * 复杂句调用 APIYi chat 改写时的 HTTP 读超时（秒）。{@code 0} 表示不设有效上限（内部使用极大时长）。
+         */
+        private int llmReadTimeoutSeconds = 0;
     }
 }

@@ -131,6 +131,8 @@ public class ConversationController {
             @RequestParam(value = "styleLabel", required = false) String styleLabel,
             @RequestParam(value = "qualityTier", required = false) String qualityTier,
             @RequestParam(value = "imageConversationContext", required = false) String imageConversationContext,
+            @RequestParam(value = "useRag", required = false) Boolean useRag,
+            @RequestParam(value = "ragCollection", required = false) String ragCollection,
             @RequestPart("mask") MultipartFile mask) {
         String username = requireUser(authorization);
         if (mask == null || mask.isEmpty()) {
@@ -157,6 +159,8 @@ public class ConversationController {
                 styleLabel,
                 qualityTier,
                 imageConversationContext,
+                useRag,
+                ragCollection,
                 maskBytes);
     }
 

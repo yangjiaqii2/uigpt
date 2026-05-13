@@ -35,6 +35,8 @@ public class KnowledgeDocumentService {
 
     private final KnowledgeDocumentRepository repository;
     private final RagService ragService;
+    private final KnowledgeDocumentTextExtractor knowledgeDocumentTextExtractor;
+    private final KnowledgeSentenceOptimizerService knowledgeSentenceOptimizerService;
 
     @Transactional(readOnly = true)
     public RagDocumentPageResponse list(int page, int size) {
@@ -143,60 +145,75 @@ public class KnowledgeDocumentService {
             }
             String name = f.getOriginalFilename() != null ? f.getOriginalFilename() : "upload";
             String ext = extension(name).toLowerCase(Locale.ROOT);
-            String raw;
-            try {
-                raw = new String(f.getBytes(), StandardCharsets.UTF_8);
-            } catch (Exception e) {
-                log.warn("读取上传文件失败 {}", name, e);
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法读取文件: " + name);
-            }
             int budget = MAX_IMPORT_TOTAL - total;
             int added;
-            if (".csv".equals(ext)) {
-                added = importCsvContent(raw, budget);
-            } else {
-                added = importTxtMdContent(raw, basename(name), budget);
+            try {
+                if (".csv".equals(ext)) {
+                    String raw = new String(f.getBytes(), StandardCharsets.UTF_8);
+                    added = importCsvContent(raw, budget);
+                } else {
+                    String plain = knowledgeDocumentTextExtractor.extractPlainText(f, ext);
+                    added =
+                            importPlainStructuredContent(
+                                    plain, basename(name), budget);
+                }
+            } catch (ResponseStatusException e) {
+                throw e;
+            } catch (Exception e) {
+                log.warn("导入失败 {}", name, e);
+                String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                String prefix =
+                        isLikelyVectorOrRagFailure(e)
+                                ? "知识库写入失败（向量库/RAG 配置，非文件格式问题）"
+                                : "无法解析文件";
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, prefix + ": " + name + " — " + detail);
             }
             total += added;
         }
         return total;
     }
 
-    private int importTxtMdContent(String text, String filenameStem, int budget) {
+    private int importPlainStructuredContent(String text, String filenameStem, int budget) {
         if (budget <= 0) {
             return 0;
         }
-        String s = text.strip();
-        if (s.isEmpty()) {
+        String stem = filenameStem != null ? filenameStem.strip() : "";
+        String title0 = stem.isEmpty() ? null : stem;
+        return createChunkedSlices(title0, text, budget);
+    }
+
+    /**
+     * 对正文做段落/句号切分、复杂句 LLM 优化、语义合并后逐条写入。
+     *
+     * @param title 非空则写入首条 chunk 的标题，其余 chunk 标题为 null
+     * @return 实际写入条数
+     */
+    private int createChunkedSlices(String title, String content, int budget) {
+        if (budget <= 0 || content == null) {
             return 0;
         }
-        List<String> chunks = new ArrayList<>();
-        for (String part : s.split("\n\\s*\n+")) {
-            String p = part.strip();
-            if (!p.isEmpty()) {
-                chunks.add(p);
-            }
+        String c0 = content.strip();
+        if (c0.isEmpty()) {
+            return 0;
         }
+        List<String> chunks =
+                new ArrayList<>(
+                        KnowledgeChunkPipeline.buildChunks(
+                                c0, knowledgeSentenceOptimizerService::polishIfComplex));
         if (chunks.isEmpty()) {
             return 0;
         }
         if (chunks.size() > MAX_CHUNKS_PER_FILE) {
             chunks = new ArrayList<>(chunks.subList(0, MAX_CHUNKS_PER_FILE));
         }
-        if (chunks.size() > budget) {
-            chunks = new ArrayList<>(chunks.subList(0, budget));
-        }
         int n = 0;
-        if (chunks.size() == 1) {
-            String stem = filenameStem != null ? filenameStem.strip() : "";
-            create(stem.isEmpty() ? null : stem, chunks.get(0));
-            return 1;
-        }
-        for (String c : chunks) {
-            if (n >= budget) {
-                break;
+        for (int i = 0; i < chunks.size() && n < budget; i++) {
+            String piece = chunks.get(i).strip();
+            if (piece.isEmpty()) {
+                continue;
             }
-            create(null, c);
+            String t = (i == 0 && title != null && !title.isBlank()) ? title : null;
+            create(t, piece);
             n++;
         }
         return n;
@@ -239,8 +256,10 @@ public class KnowledgeDocumentService {
                         titleIdx >= 0 && titleIdx < cells.length
                                 ? blankToNull(cells[titleIdx].strip())
                                 : null;
-                create(title, content);
-                n++;
+                n += createChunkedSlices(title, content, budget - n);
+                if (n >= budget) {
+                    break;
+                }
             }
             return n;
         }
@@ -254,8 +273,10 @@ public class KnowledgeDocumentService {
             if (content.isEmpty()) {
                 continue;
             }
-            create(null, content);
-            n++;
+            n += createChunkedSlices(null, content, budget - n);
+            if (n >= budget) {
+                break;
+            }
         }
         return n;
     }
@@ -270,6 +291,35 @@ public class KnowledgeDocumentService {
             parts[i] = parts[i].strip();
         }
         return parts;
+    }
+
+    private static boolean isLikelyVectorOrRagFailure(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String m = t.getMessage();
+            if (m == null) {
+                continue;
+            }
+            if (m.contains("向量库")
+                    || m.contains("Qdrant")
+                    || m.contains("UIGPT_RAG_")
+                    || m.contains("embedding 失败")
+                    || m.contains("RAG 未就绪")) {
+                return true;
+            }
+            if (m.contains("401") && (m.contains("API key") || m.contains("Unauthorized"))) {
+                return true;
+            }
+            if (m.contains("Must provide an API key") || m.contains("Authorization bearer")) {
+                return true;
+            }
+            if (m.contains("I/O error") && (m.contains("qdrant") || m.contains("/collections/"))) {
+                return true;
+            }
+            if (m.contains("doesn't exist") && m.contains("Collection")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String basename(String filename) {

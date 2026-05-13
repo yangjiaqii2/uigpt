@@ -1,16 +1,19 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useKnowledgeImportStore } from '../stores/knowledgeImport'
 import {
   adminRagListDocuments,
   adminRagGetDocument,
   adminRagCreateDocument,
   adminRagDeleteDocument,
-  adminRagImportDocuments,
 } from '../api/ragAdmin'
 import { getAxiosErrorMessage } from '../utils/httpError'
 
+const route = useRoute()
 const auth = useAuthStore()
+const kbImport = useKnowledgeImportStore()
 const loading = ref(false)
 const error = ref('')
 const toast = ref('')
@@ -33,16 +36,52 @@ const previewDoc = ref(null)
 const previewLoading = ref(false)
 
 const importInputRef = ref(null)
-const importing = ref(false)
+
+const deleteConfirmOpen = ref(false)
+/** @type {import('vue').Ref<{ id: string, title: string | null, preview: string } | null>} */
+const deleteTargetRow = ref(null)
+const deleteCancelBtnRef = ref(null)
+const deleteSubmitting = ref(false)
+
+const importBusy = computed(() => kbImport.busy)
 
 const canPrev = computed(() => page.value > 0)
 const canNext = computed(() => page.value < totalPages.value - 1)
 
+watch(deleteConfirmOpen, (open) => {
+  if (!open) return
+  void nextTick(() => deleteCancelBtnRef.value?.focus?.())
+})
+
+function onDeleteDialogKeydown(e) {
+  if (!deleteConfirmOpen.value) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    cancelDeleteDialog()
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', onDeleteDialogKeydown)
   void auth.refreshMe().then(() => {
     if (auth.isSuperAdmin) void loadList()
   })
 })
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onDeleteDialogKeydown)
+})
+
+watch(
+  () => [kbImport.needsListRefresh, route.name],
+  async ([need, name]) => {
+    if (!need || name !== 'knowledge' || !auth.isSuperAdmin) return
+    page.value = 0
+    await loadList()
+    kbImport.clearNeedsListRefresh()
+  },
+  { immediate: true },
+)
 
 async function loadList() {
   if (!auth.isSuperAdmin) return
@@ -138,19 +177,35 @@ function closePreview() {
   previewDoc.value = null
 }
 
-async function onDelete(row) {
-  const ok = window.confirm(`确定删除该条知识吗？\n${row.title || row.preview?.slice(0, 40) || row.id}`)
-  if (!ok) return
+function openDeleteConfirm(row) {
+  deleteTargetRow.value = row
+  deleteConfirmOpen.value = true
+}
+
+function cancelDeleteDialog() {
+  if (deleteSubmitting.value) return
+  deleteConfirmOpen.value = false
+  deleteTargetRow.value = null
+}
+
+async function confirmDeleteKnowledge() {
+  const row = deleteTargetRow.value
+  if (!row?.id || !deleteConfirmOpen.value) return
+  deleteSubmitting.value = true
   error.value = ''
   try {
     await adminRagDeleteDocument(row.id)
     toast.value = '已删除'
+    deleteConfirmOpen.value = false
+    deleteTargetRow.value = null
     await loadList()
     setTimeout(() => {
       toast.value = ''
     }, 2500)
   } catch (e) {
     error.value = getAxiosErrorMessage(e)
+  } finally {
+    deleteSubmitting.value = false
   }
 }
 
@@ -164,22 +219,8 @@ async function onImportPick(e) {
   if (!files?.length) return
   const arr = Array.from(files)
   input.value = ''
-  importing.value = true
   error.value = ''
-  try {
-    const { data } = await adminRagImportDocuments(arr)
-    const n = data?.imported ?? 0
-    toast.value = `导入完成，新增 ${n} 条`
-    page.value = 0
-    await loadList()
-    setTimeout(() => {
-      toast.value = ''
-    }, 3500)
-  } catch (e) {
-    error.value = getAxiosErrorMessage(e)
-  } finally {
-    importing.value = false
-  }
+  void kbImport.runImport(arr)
 }
 
 function displayTitle(row) {
@@ -210,14 +251,14 @@ function displayTitle(row) {
       <div class="kb-toolbar">
         <div class="kb-toolbar-left">
           <button type="button" class="kb-btn kb-btn--primary" @click="openAdd">新增</button>
-          <button type="button" class="kb-btn" :disabled="importing" @click="triggerImport">
-            {{ importing ? '导入中…' : '导入' }}
+          <button type="button" class="kb-btn" :disabled="importBusy" @click="triggerImport">
+            {{ importBusy ? '导入中…' : '导入' }}
           </button>
           <input
             ref="importInputRef"
             type="file"
             class="kb-file-input"
-            accept=".txt,.md,.csv,text/plain,text/markdown,text/csv"
+            accept=".txt,.md,.csv,.pdf,.doc,.docx,.xls,.xlsx,.json,text/plain,text/markdown,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/json"
             multiple
             @change="onImportPick"
           />
@@ -246,7 +287,7 @@ function displayTitle(row) {
               <td class="kb-td-time">{{ row.createdAt }}</td>
               <td class="kb-td-actions">
                 <button type="button" class="kb-link" @click="openPreview(row)">预览</button>
-                <button type="button" class="kb-link kb-link--danger" @click="onDelete(row)">删除</button>
+                <button type="button" class="kb-link kb-link--danger" @click="openDeleteConfirm(row)">删除</button>
               </td>
             </tr>
             <tr v-if="!rows.length">
@@ -308,6 +349,52 @@ function displayTitle(row) {
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <Transition name="prm-del">
+        <div
+          v-if="deleteConfirmOpen"
+          class="prm-del-shell"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kb-del-title"
+          aria-describedby="kb-del-desc"
+        >
+          <div class="prm-del-backdrop" @click="cancelDeleteDialog" />
+          <div class="prm-del-center">
+            <div class="prm-del-panel" @click.stop>
+              <h2 id="kb-del-title" class="prm-del-title">删除知识</h2>
+              <p id="kb-del-desc" class="prm-del-desc">
+                将从列表与向量库中永久移除
+                <strong class="kb-del-em">{{
+                  deleteTargetRow ? displayTitle(deleteTargetRow) : '—'
+                }}</strong>
+                （{{ deleteTargetRow?.id || '—' }}）。请确认是否继续。
+              </p>
+              <div class="prm-del-actions">
+                <button
+                  ref="deleteCancelBtnRef"
+                  type="button"
+                  class="prm-del-btn prm-del-btn--ghost"
+                  :disabled="deleteSubmitting"
+                  @click="cancelDeleteDialog"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  class="prm-del-btn prm-del-btn--danger"
+                  :disabled="deleteSubmitting"
+                  @click="confirmDeleteKnowledge"
+                >
+                  {{ deleteSubmitting ? '删除中…' : '确认删除' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -632,5 +719,177 @@ function displayTitle(row) {
   word-break: break-word;
   max-height: 50vh;
   overflow: auto;
+}
+
+.kb-del-em {
+  color: var(--chat-fg-strong, #e8ecf5);
+  font-weight: 650;
+  word-break: break-word;
+}
+
+/* 与提示词页 PromptsView 删除确认一致的毛玻璃模态（类名 prm-del-* 复用） */
+.prm-del-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 10080;
+  pointer-events: auto;
+}
+
+.prm-del-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--chat-backdrop, rgba(0, 0, 0, 0.45)) 88%, #000);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.prm-del-center {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(20px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px))
+    max(20px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.prm-del-panel {
+  width: min(100%, 380px);
+  pointer-events: auto;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--chat-border-strong) 92%, transparent);
+  background: color-mix(in srgb, var(--chat-panel) 76%, rgba(255, 255, 255, 0.06));
+  -webkit-backdrop-filter: blur(22px);
+  backdrop-filter: blur(22px);
+  box-shadow:
+    var(--chat-panel-shadow, 0 16px 48px rgba(0, 0, 0, 0.45)),
+    inset 0 1px 0 color-mix(in srgb, var(--chat-fg-strong, #fff) 8%, transparent);
+  padding: 22px 22px 18px;
+  box-sizing: border-box;
+}
+
+.prm-del-title {
+  margin: 0 0 10px;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--chat-fg-strong);
+  text-align: center;
+}
+
+.prm-del-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  color: var(--chat-muted);
+  text-align: center;
+}
+
+.prm-del-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.prm-del-btn {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 11px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.22s ease,
+    opacity 0.2s ease;
+}
+
+.prm-del-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.prm-del-btn--ghost {
+  border: 1px solid var(--chat-border-strong);
+  background: transparent;
+  color: var(--chat-muted-2);
+}
+
+.prm-del-btn--ghost:hover:not(:disabled) {
+  background: var(--chat-btn-bg-hover);
+  color: var(--chat-fg-strong);
+}
+
+.prm-del-btn--ghost:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.prm-del-btn--danger {
+  border: 1px solid color-mix(in srgb, var(--chat-danger-fg, #f87171) 55%, transparent);
+  color: #fff;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--chat-danger-fg, #f87171) 72%, #7f1d1d),
+    color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 12%, #991b1b)
+  );
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--chat-danger-fg, #f87171) 22%, transparent);
+  min-width: 120px;
+}
+
+.prm-del-btn--danger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-danger-fg, #f87171) 28%, transparent);
+}
+
+.prm-del-btn--danger:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.prm-del-enter-active,
+.prm-del-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.prm-del-enter-active .prm-del-panel,
+.prm-del-leave-active .prm-del-panel {
+  transition:
+    transform 0.24s cubic-bezier(0.34, 1.45, 0.64, 1),
+    opacity 0.22s ease;
+}
+
+.prm-del-enter-from,
+.prm-del-leave-to {
+  opacity: 0;
+}
+
+.prm-del-enter-from .prm-del-panel,
+.prm-del-leave-to .prm-del-panel {
+  opacity: 0;
+  transform: scale(0.94);
+}
+
+.prm-del-enter-to .prm-del-panel,
+.prm-del-leave-from .prm-del-panel {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (max-width: 480px) {
+  .prm-del-actions {
+    flex-direction: column-reverse;
+  }
+
+  .prm-del-btn {
+    width: 100%;
+  }
 }
 </style>

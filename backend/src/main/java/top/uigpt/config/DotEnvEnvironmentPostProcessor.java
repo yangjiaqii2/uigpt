@@ -27,7 +27,8 @@ import java.util.regex.Pattern;
  *
  * <p>若设置环境变量 {@code UIGPT_DOTENV_FILE} 且指向可读文件，则<strong>仅加载该路径</strong>（Docker / 任意工作目录推荐）。
  *
- * <p>否则自 {@code user.dir} 起向上最多 8 层目录查找：每层先试 {@code .env}，再试 {@code backend/.env}；仍无时尝试
+ * <p>否则自 {@code user.dir} 起向上最多 8 层目录查找：每层若同时存在 {@code .env} 与 {@code backend/.env}，则<strong>优先
+ * {@code backend/.env}</strong>；否则先试 {@code backend/.env}，再试 {@code .env}；仍无时尝试
  * {@code java -jar app.jar} 场景下 <strong>jar 同级目录</strong>的 {@code .env}。
  *
  * <p>格式：<code>KEY=value</code>，<code>#</code> 行与空行忽略。须在解析 <code>application.yml</code> 占位符<strong>之前</strong>执行（见 {@link #getOrder()}），否则
@@ -108,12 +109,18 @@ public class DotEnvEnvironmentPostProcessor implements EnvironmentPostProcessor,
         Path cur = cwd.normalize();
         for (int depth = 0; depth < 8; depth++) {
             Path direct = cur.resolve(".env");
-            if (Files.isRegularFile(direct)) {
-                return direct;
-            }
             Path nested = cur.resolve("backend").resolve(".env");
-            if (Files.isRegularFile(nested)) {
+            boolean hasDirect = Files.isRegularFile(direct);
+            boolean hasNested = Files.isRegularFile(nested);
+            // 仓库根同时存在 .env 与 backend/.env 时，以后端目录为准（机密集中在 backend/.env）
+            if (hasDirect && hasNested) {
                 return nested;
+            }
+            if (hasNested) {
+                return nested;
+            }
+            if (hasDirect) {
+                return direct;
             }
             Path parent = cur.getParent();
             if (parent == null || parent.equals(cur)) {

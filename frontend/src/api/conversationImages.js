@@ -17,7 +17,9 @@ export function uploadConversationImage(conversationId, formData) {
  * @param {{ messageSortOrder: number, skillId: string, userMessage: string, assistantReply?: string, imageConversationContext?: string, aspectKey?: string, styleLabel?: string, tierMode?: 'free'|'fast', qualityTier?: 'standard'|'hd'|'ultra' }} body
  */
 export function generateErnieConversationImage(conversationId, body) {
-  return http.post(`/conversations/${conversationId}/images/ernie-generate`, body)
+  return http.post(`/conversations/${conversationId}/images/ernie-generate`, body, {
+    timeout: 100_000,
+  })
 }
 
 /**
@@ -26,7 +28,9 @@ export function generateErnieConversationImage(conversationId, body) {
  * @param {FormData} formData
  */
 export function generateErnieConversationImageInpaint(conversationId, formData) {
-  return http.post(`/conversations/${conversationId}/images/ernie-inpaint`, formData)
+  return http.post(`/conversations/${conversationId}/images/ernie-inpaint`, formData, {
+    timeout: 100_000,
+  })
 }
 
 /** @param {number} conversationId @param {number} imageId */

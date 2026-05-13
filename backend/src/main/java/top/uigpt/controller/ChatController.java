@@ -26,7 +26,6 @@ import top.uigpt.service.ChatService;
 import top.uigpt.service.ConversationService;
 import top.uigpt.service.JwtService;
 import top.uigpt.service.PointsService;
-import top.uigpt.service.RagService;
 
 import org.springframework.dao.DataAccessException;
 
@@ -50,7 +49,6 @@ public class ChatController {
     private final ConversationService conversationService;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
-    private final RagService ragService;
     private final UserRepository userRepository;
     private final PointsService pointsService;
 
@@ -63,7 +61,7 @@ public class ChatController {
 
         ChatRequest forModel =
                 chatPassthrough() ? request : conversationService.injectSessionMemory(username, request);
-        forModel = ragService.augment(forModel, chatPassthrough());
+        // 对话接口不注入向量知识库；RAG 仅用于文生图等模块（如 augmentPromptForImage）
 
         if (username == null) {
             ChatResponse ai = chatService.chat(forModel, false, null);
@@ -124,7 +122,7 @@ public class ChatController {
                                 chatPassthrough()
                                         ? request
                                         : conversationService.injectSessionMemory(username, request);
-                        forModel = ragService.augment(forModel, chatPassthrough());
+                        // 流式对话不注入 RAG；知识库仅用于图片生成等接口
                         boolean allowVision = username != null;
                         String fullReply =
                                 chatService.streamChat(

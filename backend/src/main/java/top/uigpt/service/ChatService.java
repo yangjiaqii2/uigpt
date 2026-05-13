@@ -666,20 +666,16 @@ public class ChatService {
     }
 
     /**
-     * 与历史「识图摘要」路径一致：仅自由对话技能且末条用户含合法参考图 URL 时启用内联多模态，避免重复付费与意外泄露。
+     * 末条用户消息含参考图且开启内联开关时，将图片直接并入主模型多模态请求，避免「识图预检 + 主对话」两次调用。
+     *
+     * <p>不再按 skillId 白名单限制：多模态对话页统一走内联（关闭 {@code uigpt.api-yi-image.vision-inline-multimodal}
+     * 时仍回退为识图摘要路径）。
      */
     private boolean useVisionInlineMultimodal(ChatRequest request, boolean allowVision) {
         if (!allowVision || request == null) {
             return false;
         }
         if (!appProperties.getApiYiImage().isVisionInlineMultimodal()) {
-            return false;
-        }
-        String skillId = request.getSkillId();
-        if (skillId == null || skillId.isBlank()) {
-            return false;
-        }
-        if (!VISION_PREFLIGHT_SKILL_IDS.contains(skillId.strip())) {
             return false;
         }
         ChatMessageDto lastUser = findLastUserMessage(request.getMessages());

@@ -59,6 +59,7 @@ public class ConversationImageService {
     private final ObjectStorageService objectStorageService;
     private final ApiYiImageService apiYiImageService;
     private final PointsService pointsService;
+    private final RagService ragService;
 
     public List<ConversationImageResponse> listForUser(
             String username, Long conversationId, int offset, int limit) {
@@ -152,6 +153,12 @@ public class ConversationImageService {
                         req.getStyleLabel(),
                         safeSkill,
                         req.getImageConversationContext());
+        prompt =
+                ragService.augmentPromptForImage(
+                        prompt,
+                        req.getUserMessage() == null ? "" : req.getUserMessage().strip(),
+                        req.getUseRag(),
+                        req.getRagCollection());
 
         byte[] bytes =
                 apiYiImageService.generateImageFromTextPrompt(
@@ -206,6 +213,8 @@ public class ConversationImageService {
             String styleLabel,
             String qualityTier,
             String imageConversationContext,
+            Boolean useRag,
+            String ragCollection,
             byte[] maskPngBytes) {
         if (!objectStorageService.isReady()) {
             throw new ResponseStatusException(
@@ -270,6 +279,9 @@ public class ConversationImageService {
         String prompt =
                 buildFastDirectImagePrompt(
                         combined, null, aspectKey, styleLabel, safeSkill, imageConversationContext);
+        prompt =
+                ragService.augmentPromptForImage(
+                        prompt, um, useRag, ragCollection);
         String ext = guessImageExtension(sniffImageContentType(imageBytes), "");
         String fn = "source" + (ext.startsWith(".") ? ext : ".png");
         byte[] outBytes =

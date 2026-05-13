@@ -1,5 +1,5 @@
 config/uigpt-local.yml
 config/runtime-local.properties
+# 本地机密勿入库：仅使用 backend/.env（文件内含说明注释）
 .env
-.env.jwt
-.env.db
+.env.*

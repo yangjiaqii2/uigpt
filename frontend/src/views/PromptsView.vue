@@ -13,7 +13,7 @@ import { getAxiosErrorMessage } from '../utils/httpError'
 /** @typedef {{ id: number, title: string, body: string, updatedAt: string }} PromptItem */
 
 const auth = useAuthStore()
-const { privilege } = storeToRefs(auth)
+const { isSuperAdmin } = storeToRefs(auth)
 
 /** @type {import('vue').Ref<PromptItem[]>} */
 const prompts = ref([])
@@ -30,8 +30,6 @@ const deleteConfirmOpen = ref(false)
 const deleteCancelBtnRef = ref(null)
 const toast = ref('')
 let toastTimer = 0
-
-const isSuperAdmin = computed(() => privilege.value === 2)
 
 const sortedPrompts = computed(() => {
   const list = [...prompts.value]
@@ -202,24 +200,51 @@ async function saveForm() {
   }
 }
 
+/**
+ * Clipboard API 在 HTTP（非 localhost）等环境下常不可用，需 textarea + execCommand 降级。
+ * @param {string} text
+ * @returns {Promise<boolean>}
+ */
+async function copyTextToClipboard(text) {
+  const t = String(text ?? '')
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(t)
+      return true
+    }
+  } catch {
+    /* 走降级 */
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = t
+    ta.setAttribute('readonly', '')
+    ta.setAttribute('aria-hidden', 'true')
+    ta.style.cssText =
+      'position:fixed;left:0;top:0;width:1px;height:1px;padding:0;margin:0;border:none;outline:none;opacity:0;font-size:16px;'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const len = ta.value.length
+    ta.setSelectionRange(0, len)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 async function copyBody() {
   const text = String(formBody.value ?? '')
-  try {
-    await navigator.clipboard.writeText(text)
-    showToast('已复制到剪贴板')
-  } catch {
-    showToast('复制失败，请手动选择复制')
-  }
+  const ok = await copyTextToClipboard(text)
+  showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择复制')
 }
 
 /** @param {string} [text] */
 async function copyPromptBody(text) {
-  try {
-    await navigator.clipboard.writeText(String(text ?? ''))
-    showToast('已复制')
-  } catch {
-    showToast('复制失败，请手动选择复制')
-  }
+  const ok = await copyTextToClipboard(String(text ?? ''))
+  showToast(ok ? '已复制' : '复制失败，请手动选择复制')
 }
 
 function formatUpdated(iso) {

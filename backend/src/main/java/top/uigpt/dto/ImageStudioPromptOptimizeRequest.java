@@ -1,6 +1,7 @@
 package top.uigpt.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 /** 图片工作台 · 提示词优化（LLM 改写为更适合 Gemini/Banana 的描述） */
@@ -23,4 +24,10 @@ public class ImageStudioPromptOptimizeRequest {
 
     /** 创作介质：{@code video} 时使用视频提示词优化系统提示；省略或非 video 为图片工作台 */
     private String medium = "";
+
+    /** 默认 true：优化前按 {@link #prompt} 注入知识库片段；传 false 可关闭。 */
+    private Boolean useRag = Boolean.TRUE;
+
+    @Size(max = 128, message = "ragCollection 过长")
+    private String ragCollection;
 }

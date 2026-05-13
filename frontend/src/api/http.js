@@ -11,6 +11,15 @@ http.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // 实例默认带 application/json；FormData 须由浏览器设置 multipart 边界，否则会 415
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.headers) {
+    const h = config.headers
+    if (typeof h.delete === 'function') {
+      h.delete('Content-Type')
+    } else {
+      delete h['Content-Type']
+    }
+  }
   return config
 })
 
