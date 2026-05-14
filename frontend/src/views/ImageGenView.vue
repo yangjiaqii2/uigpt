@@ -346,7 +346,7 @@ const tools = [
   { id: 'style', label: '风格迁移' },
 ]
 
-/** 切换工具时若有对话流，先经毛玻璃确认再切（见 Teleport #ig-tsw） */
+/** 切换工具时若有对话流，先经毛玻璃确认再切（见 Teleport #ig-tsw）；文生图↔图生图互切无对话时也会新建图片会话，避免模式间串上下文 */
 const toolSwitchConfirmOpen = ref(false)
 /** @type {import('vue').Ref<ToolId | null>} */
 const pendingToolId = ref(null)
@@ -825,11 +825,22 @@ async function applyToolSelection(id) {
   statusHint.value = `已切换：${tools.find((t) => t.id === id)?.label || ''}`
 }
 
+function shouldFreshSessionForTxtImg2ImgSwitch(fromId, toId) {
+  const primary = fromId === 'txt2img' || fromId === 'img2img'
+  const toPrimary = toId === 'txt2img' || toId === 'img2img'
+  return primary && toPrimary && fromId !== toId
+}
+
 async function selectTool(id) {
-  if (id !== activeTool.value && studioChatMessages.value.length > 0) {
+  if (id === activeTool.value) return
+  if (studioChatMessages.value.length > 0) {
     pendingToolId.value = id
     toolSwitchConfirmOpen.value = true
     return
+  }
+  if (shouldFreshSessionForTxtImg2ImgSwitch(activeTool.value, id)) {
+    const ok = await onNewImageSession(true)
+    if (!ok) return
   }
   await applyToolSelection(id)
 }
@@ -1148,8 +1159,15 @@ async function collectInlineImages() {
     seen.add(u)
     out.push(await urlToInlinePartForStudioEdit(u))
   }
-  if (resultUrl.value) await add(resultUrl.value)
-  for (const r of referenceImages.value) await add(r.url)
+  /* 图生图：用户新上传的参考图应优先于「画布上残留的旧成图」，否则模型主要吃第一张（resultUrl），上传图形同被忽略 */
+  const refsFirst = activeTool.value === 'img2img' && referenceImages.value.length > 0
+  if (refsFirst) {
+    for (const r of referenceImages.value) await add(r.url)
+    if (resultUrl.value) await add(resultUrl.value)
+  } else {
+    if (resultUrl.value) await add(resultUrl.value)
+    for (const r of referenceImages.value) await add(r.url)
+  }
   return out
 }
 

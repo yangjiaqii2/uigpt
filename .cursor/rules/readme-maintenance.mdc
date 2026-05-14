@@ -1,0 +1,11 @@
+---
+description: After editing core UIGPT modules, keep README.md accurate using the readme-maintenance skill
+globs: backend/src/main/java/**/*.java,frontend/src/router/**/*.js,frontend/src/views/**/*.vue,backend/src/main/resources/application.yml,backend/pom.xml,frontend/package.json,README.md
+alwaysApply: false
+---
+
+# README sync
+
+When your change affects **architecture, integrations, routes, major views, or documented behavior**, update the repository root **`README.md`** in the same change when practical.
+
+Follow the project Cursor skill **readme-maintenance**: read `.cursor/skills/readme-maintenance/SKILL.md` and `.cursor/skills/readme-maintenance/reference-scan-checklist.md`, then patch only stale sections. Do not add unverified middleware or paste secrets.
