@@ -1,5 +1,9 @@
--- MySQL 8.x，数据库与表（请按需修改库名、字符集）
--- 连接：localhost:3306
+-- =============================================================================
+-- UIGPT MySQL 8.x 一键建库（新环境执行本文件即可）
+-- 已合并原 backend/src/main/resources/db/ 下各 *.mysql.sql 拆脚，避免多头维护。
+-- 极老库缺列请另执行 docs/migrate-incremental-columns.sql（可重复执行）。
+-- 请按需修改库名、字符集；连接示例：localhost:3306
+-- =============================================================================
 
 CREATE DATABASE IF NOT EXISTS uigpt
   DEFAULT CHARACTER SET utf8mb4
@@ -136,7 +140,7 @@ VALUES (
 -- ALTER TABLE chat_models ADD COLUMN base_url VARCHAR(512) DEFAULT NULL COMMENT '对话网关 Base URL（须含 /v1）；空则用全局 uigpt.ai.base-url' AFTER api_key_cipher;
 --（亦可直接运行 docs/fix-chat-models-base-url.sql；或执行 docs/migrate-incremental-columns.sql 完整脚本）
 
--- 全局提示词（GET /api/prompts 任意登录用户；增删改仅 users.privilege=2，见 backend/db/prompt_templates.mysql.sql）
+-- 全局提示词（GET /api/prompts 任意登录用户；增删改仅 users.privilege=2）
 CREATE TABLE IF NOT EXISTS prompt_templates (
   id         BIGINT       NOT NULL AUTO_INCREMENT,
   title      VARCHAR(512) NOT NULL,
@@ -147,3 +151,76 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
   KEY idx_prompt_templates_updated (updated_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='全局提示词';
+
+-- -----------------------------------------------------------------------------
+-- 知识库文档元数据（与 Qdrant 向量 point_id 一致；RagAdmin / RagService）
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  point_id VARCHAR(36) NOT NULL COMMENT '与 Qdrant 点 id 一致',
+  title VARCHAR(512) DEFAULT NULL,
+  content MEDIUMTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_knowledge_point_id (point_id),
+  KEY idx_knowledge_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 图片工作台「图片会话」（与 chat_conversations 隔离；ddl-auto=none 时依赖本脚本）
+-- studio_skill_id：与前端 studioSkillId 一致，如 interior_designer、universal_master
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS image_studio_sessions (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  context_text MEDIUMTEXT NULL,
+  image_count INT NOT NULL DEFAULT 0,
+  last_image_url VARCHAR(1024) NULL,
+  studio_skill_id VARCHAR(64) NOT NULL DEFAULT 'interior_designer'
+    COMMENT '作图技能：interior_designer=家装，universal_master=全能大师等',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_image_studio_sessions_user_updated (user_id, updated_at),
+  CONSTRAINT fk_image_studio_sessions_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS image_studio_session_images (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  session_id BIGINT NOT NULL,
+  object_key VARCHAR(512) NOT NULL,
+  image_url VARCHAR(1024) NOT NULL,
+  user_prompt MEDIUMTEXT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_image_studio_session_images_session_sort (session_id, sort_order),
+  CONSTRAINT fk_image_studio_session_images_session
+    FOREIGN KEY (session_id) REFERENCES image_studio_sessions (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 站内信（普通用户与管理员线程 + 消息）
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS site_mail_threads (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL COMMENT '发起方（普通用户）',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_site_mail_threads_user (user_id),
+  KEY idx_site_mail_threads_updated (updated_at),
+  CONSTRAINT fk_site_mail_threads_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS site_mail_messages (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  thread_id BIGINT NOT NULL,
+  sender_user_id BIGINT NOT NULL,
+  body TEXT NOT NULL,
+  image_urls_json VARCHAR(8000) NULL COMMENT 'JSON 数组字符串，元素为可访问的图片 URL',
+  read_by_admin TINYINT(1) NOT NULL DEFAULT 0,
+  read_by_user TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  KEY idx_site_mail_messages_thread_created (thread_id, created_at),
+  CONSTRAINT fk_site_mail_messages_thread FOREIGN KEY (thread_id) REFERENCES site_mail_threads (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

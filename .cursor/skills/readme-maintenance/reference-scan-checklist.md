@@ -41,7 +41,7 @@ Run this checklist when refreshing `README.md`. Paths are repo-relative to the U
 
 ## 7. Database
 
-- **Migrations / DDL**: `backend/src/main/resources/db/*.sql`—mention when README documents schema setup.
+- **Migrations / DDL**: `docs/schema-mysql.sql` (full bootstrap), `docs/migrate-incremental-columns.sql` (legacy upgrades), `backend/src/main/resources/db/README.md` (notes).
 
 ## 8. Consistency pass
 

@@ -54,7 +54,7 @@ public class User {
     @Column(nullable = false)
     private byte privilege = 0;
 
-    /** 可用积分（扣费递减；新库须具备 db/user_points.mysql.sql 中的 bonus/refill 列以启用日重置） */
+    /** 可用积分（扣费递减；新库执行 {@code docs/schema-mysql.sql} 须含 points / points_bonus / points_refill_date 列以启用日重置） */
     @Column(nullable = false)
     private int points = 0;
 

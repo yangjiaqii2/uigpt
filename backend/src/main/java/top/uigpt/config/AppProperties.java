@@ -31,8 +31,8 @@ public class AppProperties {
      * 向量检索增强（Qdrant + OpenAI 兼容 embeddings）。关闭或未配全时对话行为不变。
      *
      * <p>环境变量前缀 {@code UIGPT_RAG_*}，与 {@code application.yml} 的 {@code uigpt.rag} 一一对应（如 {@code
-     * UIGPT_RAG_ENABLED}、{@code UIGPT_RAG_QDRANT_URL}、{@code UIGPT_RAG_EMBEDDING_BASE_URL} 等）。知识库表结构见资源
-     * {@code db/knowledge_documents.mysql.sql}。
+     * UIGPT_RAG_ENABLED}、{@code UIGPT_RAG_QDRANT_URL}、{@code UIGPT_RAG_EMBEDDING_BASE_URL} 等）。知识库表结构见仓库根
+     * {@code docs/schema-mysql.sql}（表 {@code knowledge_documents}）。
      */
     private Rag rag = new Rag();
 

@@ -3,3 +3,7 @@ config/runtime-local.properties
 # 本地机密勿入库：仅使用 backend/.env（文件内含说明注释）
 .env
 .env.*
+
+# Maven 构建输出（勿提交 .class / 复制到 target 的资源）
+/target/
+*.class

@@ -18,7 +18,7 @@ uigpt:
   # true：用户消息原样转发上游 API，不注入系统提示/会话记忆/技能上下文，不识图预处理；false：启用原有改写与降级链
   chat:
     passthrough: ${UIGPT_CHAT_PASSTHROUGH:true}
-  # 登录用户积分：自然日按上海时区 Asia/Shanghai 重置；详见 PointsService 与 db/user_points.mysql.sql
+  # 登录用户积分：自然日按上海时区 Asia/Shanghai 重置；详见 PointsService；库表见 docs/schema-mysql.sql
   points:
     enabled: ${UIGPT_POINTS_ENABLED:true}
     chat-turn-cost: ${UIGPT_POINTS_CHAT_TURN:5}
@@ -102,7 +102,7 @@ uigpt:
 
   # 向量知识库（Qdrant + OpenAI 兼容 embeddings）。图片工作台 /api/image-studio 作图固定请求 RAG 注入（仍受 enabled 与向量管道是否配全约束；未命中则不影响出图）。
   # 知识库管理：列表读 MySQL（无单独「列表↔库」同步）；写入时先 upsert Qdrant 再存库，见 KnowledgeDocumentService。
-  # 首次建表：在 MySQL 执行 classpath 资源 db/knowledge_documents.mysql.sql（仓库路径 backend/src/main/resources/db/knowledge_documents.mysql.sql）。
+  # 首次建表：在 MySQL 执行仓库根 docs/schema-mysql.sql（含 knowledge_documents 等全表；说明见 backend/src/main/resources/db/README.md）。
   rag:
     # 知识库导入/向量写入须 enabled=true 且配全：Qdrant、embedding（/v1）、密钥、collection（启动时若无集合将按 embedding-vector-size 自动创建）
     enabled: ${UIGPT_RAG_ENABLED:true}

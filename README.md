@@ -70,11 +70,146 @@ graph TD
 
 ---
 
+## 后端流程详解（多模态对话 · 图片工作台 · 技能）
+
+本节按**真实调用顺序**说明，便于对照 `ChatController` / `ChatService`、`ImageStudioController` / `ImageStudioNanoBananaOrchestrator` 与前端入参。
+
+### A. 对话（Chat）：入口、记忆与多模态
+
+**HTTP 入口**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/chat` | 非流式整段回复 |
+| `POST` | `/api/chat/stream` | **SSE**；首包 `: uigpt-handshake`，正文为 `{"delta":"…"}` JSON 行，结束 `{"done":true,"conversationId":…}` |
+
+**Controller 层（`ChatController`）**
+
+1. 解析 `Authorization` → 用户名（访客为 `null`）；校验访客不得带 `conversationId`。
+2. 若非透传：`ConversationService.injectSessionMemory` 在消息列表**最前**插入一条 `system`（`chat_conversations.session_memory` 摘要；工作台归档会话不注入）。
+3. **注意**：主对话接口**不**调用 `RagService.augment`，即标准聊天**不走 Qdrant 向量注入**（与作图侧 RAG 分离）。
+4. 流式：先 `PointsService` 扣积分 → `ChatService.prepareStreamChat` → `Executor` 中 `forwardStreamToEmitter` → 成功后 `syncAfterChat` + `refreshSessionMemoryAfterTurn`（透传模式下跳过记忆刷新）。
+
+**`ChatRequest` 与技能相关字段**
+
+| 字段 | 作用 |
+|------|------|
+| `messages` | 多轮消息；**仅末条 `user` 的 `images[]` 参与视觉**（见 DTO 注释）。 |
+| `skillContext` | 前端「技能卡片」等长文本；服务端拼进**额外 system**（`withZhReplySystemPrompt`），**不落库**到用户消息。 |
+| `skillId` | 业务分类；当前与识图预检强相关（见下）。 |
+| `fastFreeformModel` / `deepReasoning` | 解析为上游 `model` 与降级链（`FastFreeformModelFallback`）。 |
+| `useRag` / `ragCollection` | 为透传等扩展预留；**主对话路径不启 Qdrant**。 |
+
+**多模态三条路径（`ChatService`，由 `uigpt.chat.passthrough` 与是否登录共同决定）**
+
+设 `passthrough = appProperties.getChat().isPassthrough()`，`allowVision` = 已登录。
+
+1. **内联多模态（推荐路径，非透传 + 已登录）**  
+   - 条件：`!passthrough && useVisionInlineMultimodal(...)`，即**末条 user** 的 `ChatMessageDto.images[]` 经校验后非空。  
+   - 校验：`collectVisionImageUrlsFromMessage` 只接受 `data:image/*;base64,...` 或 `https://`；每条消息最多 **4** 张，总 URL 字符数有上限。  
+   - 行为：`putMessagesArray` 将该 user 消息序列化为 OpenAI 风格 **`content` 数组**：`{type:text}` + 多个 `{type:image_url, image_url:{url}}`。主模型**直接看图**，不再先调视觉摘要接口。
+
+2. **识图预检 + 文本主对话（非透传 + 已登录 + 末条有图但未走内联时）**  
+   - 当未满足内联条件时，对请求副本执行 `withVisionPreflight`。  
+   - **仅当 `skillId` 为 `freeform`**（常量 `VISION_PREFLIGHT_SKILL_IDS`）且 `ApiYiImageService` 视觉就绪时：用末条用户图 URL 调 **`visionChatAnalyze`**，生成简体中文摘要，**追加到 `skillContext`**（前缀 `【参考图·API易视觉模型摘要】`），**不改库内消息正文**。主请求仍为纯文本多轮 + 增强后的 system 块。
+
+3. **透传模式**  
+   - `messages` 原样上传（不注入「中文回复」system，除非客户端自己传）。  
+   - `embedVision` 由 `messageThreadHasVisionImages` 决定：线程中**任一条** user 含合法图 URL 则对该条用 `content[]` 多模态序列化；纯图无字时可用空格占位（`passthroughPlainMessages`）。
+
+**访客**：`allowVision=false`，不内联多模态、不走识图预检追加。
+
+**会话记忆**：非透传且带 `conversationId` 时注入 `session_memory`；每轮结束后 `mergeSessionMemorySummary` 异步合并进库（工作台归档会话跳过）。
+
+---
+
+### B. 图片工作台（Image Studio）：Nano Banana 全链路
+
+**HTTP 前缀**：`/api/image-studio`（`ImageStudioController`），均需登录；出图前校验 COS 可用。
+
+**请求体共性（文生图 `ImageStudioTextRequest` / 编辑 `ImageStudioEditRequest`）**
+
+| 字段 | 含义 |
+|------|------|
+| `prompt` | 用户指令（经编排后仍可能再被模型消费）。 |
+| `userDisplayPrompt` | 可选；**落库展示**优先用该字段。 |
+| `imageSessionContext` | 前端维护的多轮摘要（最长约 12k）；服务端与 `prompt` 合并。 |
+| `aspectRatio` / `imageSize` | 画幅与分辨率档位（影响积分档位 `ImageGenerationPointCosts`）。 |
+| `ragCollection` | 可选；覆盖默认 Qdrant 集合名（合法字符限制见 DTO）。 |
+| `imageStudioSessionId` | 非空则写入 **图片会话**表；否则可走 **对话归档**会话存图（`ConversationImageService.persistImageStudioGeneration`）。 |
+| `studioToolId` | 工作台工具：`txt2img` / `img2img` / `inpaint` / `outpaint` / `enhance` / `style`，供作品库按类型归档。 |
+| `studioSkillId` | 作图**技能策略**（与前端技能 id 对齐，见下文 C 节）。 |
+| `useRag` | 历史兼容字段；**三阶段内是否注入向量块**由 `studioSkillId`（`ImageStudioSkillIds.ragKnowledgeBlockEnabled`）与全局 `uigpt.rag` 决定，而非该布尔值单独关闭 Planner。 |
+
+**编辑专用**：`ImageStudioEditRequest.images[]`：`mimeType` + `dataBase64`（可带 `data:...;base64,` 前缀）；单张解码后 **≤ 8MB**。
+
+**编排总线：`ImageStudioNanoBananaOrchestrator`**
+
+1. **`ImageMemoryService.mergeForApi(userPrompt, imageSessionContext)`**（默认实现 `DefaultImageMemoryService`）  
+   - 若有会话上下文：拼成 `【当前图片会话上下文】` + 分隔 + `【本次指令】` + 用户句；上下文超长约 **8000** 字符截断。
+
+2. **`NanoBananaPromptPlanner.plan`** —— 固定 **三阶段**（最终得到 `FinalImagePrompt.promptForApi()`）  
+   - **阶段 1 · 意图 JSON**：`IntentRouter` → `ApiYiImageService.imageStudioPhase1IntentJson`（上游 chat/completions）。`ImageStudioSkillPrompts.phase1IntentSystem(studioSkillId)` 选择系统提示：**家装**用 `ImageStudioIntentPrompts`，**全能大师**用 `UniversalImageStudioIntentPrompts`。产出结构化 JSON（含后续 RAG 用的字段等）。  
+   - **阶段 2 · RAG 查询句**：`NanoBananaRagQueryExtractor.resolveRagEmbeddingQuery` 从意图 JSON 取 `rag_embedding_query`，否则从 `style_en_hints` 等兜底；家装技能会在兜底句后附加 `interior design` 等后缀。  
+   - **阶段 2b · 向量块**：`RagService.retrieveKnowledgeBlockForImage(query, useRagFlag, collectionOverride)`。当 `ImageStudioSkillIds.ragKnowledgeBlockEnabled(studioSkillId)` 为 **false**（当前即 **`universal_master`**）时，**不检索、不注入知识块**（等价 `useRag=false` 传入检索层）。否则按全局 RAG 配置 + 集合名做 embedding → Qdrant → 拼接带固定头的文本块。  
+   - **阶段 3 · 最终英文 Prompt**：`PromptStrategyGenerator.finalPromptForNanoBanana`；`ImageStudioSkillPrompts.phase3SystemCombined(studioSkillId)` 选择第三阶段系统提示与附录：**家装**走 `InteriorNanoBananaPromptOptimizer` + 家装附录；**全能大师**走 `UniversalNanoBananaPromptOptimizer` + 通用附录。
+
+3. **`ImageToolExecutor`**：`nanoBananaTextToImage` / `nanoBananaEditImages` → `ApiYiImageService` 组装 Gemini **`generateContent`**（文：单 text part + 生成配置；图编：text + 多段 `inlineData`）。
+
+4. **落库与响应**：PNG 字节上传 COS；返回 `mimeType`、`imageBase64`、浏览器可读 `imageUrl`、`imageId` 等（见 `ImageStudioGenerateResponse` / `ImageStudioPairResponse`）。
+
+**多候选接口**（`*-pair`）
+
+- 因 Gemini 无 OpenAI 式 `n` 参数，服务端用 **线程池并行**多路相同（或略多样化）prompt，候选数由 `candidateCount` 与 `uigpt.image-studio.pair-max-candidates` 限制。  
+- 积分按**一次用户动作**扣一单档（非按张数倍增）。  
+- 可选 `ImageCandidateJudge` 打分得到 `recommendedSlot`（配置关闭时为空）。
+
+**提示词优化接口**：`POST /api/image-studio/prompt/optimize` —— 先用 `RagService.augmentPromptForImage` 做**扩写用**向量前缀（与三阶段内 `retrieveKnowledgeBlockForImage` 不同用途），再调 `ApiYiImageService.optimizeImageStudioPrompt`。
+
+```mermaid
+flowchart LR
+  subgraph merge[记忆合并]
+    P[prompt] --> M[mergeForApi]
+    C[imageSessionContext] --> M
+  end
+  M --> S1[阶段1 意图 JSON]
+  S1 --> S2[阶段2 RAG 查询 + Qdrant 块]
+  S2 --> S3[阶段3 英文终稿]
+  S3 --> G[Gemini generateContent]
+  G --> COS[COS 持久化]
+```
+
+---
+
+### C. 技能选择：对话侧 vs 图片侧（前后端对齐）
+
+**1）对话页（`ChatView` 等）**
+
+- **`skillContext`**：任意技能卡片文案 → 仅影响**本轮** system 拼接。  
+- **`skillId`**：后端硬编码 **`freeform`** 才触发 **识图预检**（`visionChatAnalyze`）；其它取值不改变预检逻辑。  
+- 与图片工作台的 `studioSkillId`**不是同一枚举**。
+
+**2）图片工作台（`ImageGenView` + `skillStore.js`）**
+
+- 下拉 / 技能广场维护的 **`studioSkillId`** 写入请求体，并可通过 **`PATCH` 图片会话**、URL query `studioSkill`、以及 `sessionStorage`（`STUDIO_SKILL_STORAGE_KEY`）持久化用户偏好。  
+- **前端**：`skillStore.normalizeStudioSkillId` 对「未知 id」回落为 store 内默认技能（种子数据优先 `universal_master`）。  
+- **后端**：`ImageStudioSkillIds.normalize` **仅识别** `interior_designer` 与 `universal_master`；**任何其它字符串（含用户在广场自建的 id）一律按 `interior_designer` 策略走家装三阶段 Prompt**。若要让自建 id 生效，需同步扩展后端 `ImageStudioSkillIds` 与 `ImageStudioSkillPrompts` 分支。  
+- **`universal_master`**：`ragKnowledgeBlockEnabled == false`，不注入 Qdrant 知识块，阶段 1/3 使用「通用」提示词资源。  
+- **`interior_designer`**：绑定家装意图与 RAG 查询风格；`ragCollection` 在前端种子中与 **`home_design`** 集合对应（仍以服务端 `application.yml` 默认集合为准，override 可改）。
+
+**3）RAG 集合与 `ragCollection`**
+
+- 作图检索集合由全局 `uigpt.rag` 与请求体 `ragCollection` 共同解析（非法则回退默认）。  
+- 技能广场中为用户技能配置的 `ragCollection` 会随 `studioSkillId` 由前端传入作图请求；后端未知 `studioSkillId` 时仍走家装逻辑，但 **override 集合名仍可能生效**（因走同一 `ImageStudioTextRequest.getRagCollection()`）。
+
+---
+
 ## 核心功能模块
 
 ### 1. AI 对话（Chat）
 
 - **职责**：流式对话、多模态参考图、访客模式、登录用户积分扣减、会话与消息持久化。
+- **流程摘要**：见上文 **「后端流程详解」→ A. 对话**（SSE 形状、`skillContext` / `skillId`、内联多模态与识图预检分支）。
 - **关键文件**：`backend/.../controller/ChatController.java`、`ConversationController.java`、`service/ChatService.java`、`service/ConversationService.java`、`service/JwtService.java`；前端 `frontend/src/views/ChatView.vue`。
 - **要点**：
   - SSE：`ResponseBodyEmitter` + 上游 `WebClient` 流式读取。
@@ -85,19 +220,20 @@ graph TD
 ### 2. AI 图像工作台（Image Studio）
 
 - **职责**：文生图 / 图生图 / 局部重绘 / 智能扩图 / 画质增强 / 风格迁移（前端工具态）；服务端 **Nano Banana** 管线。
+- **流程摘要**：见上文 **「后端流程详解」→ B. 图片工作台**（三阶段 Planner、`*-pair` 多候选、`studioToolId` / `studioSkillId`）。
 - **关键文件**：`ImageStudioController.java`、`ImageStudioSessionController.java`、`imagestudio/orchestration/ImageStudioNanoBananaOrchestrator.java`、`NanoBananaPromptPlanner.java`、`service/ApiYiImageService.java`；前端 `ImageGenView.vue`。
 - **要点**：
   - **Planner**：`NanoBananaPromptPlanner`（意图 JSON → RAG 块 → 最终英文 prompt）。
   - **出图**：`ApiYiImageService.nanoBananaTextToImage` / `nanoBananaEditImages` → **`...:generateContent`**。
   - **技能**：`studioSkillId`（如 `interior_designer` / `universal_master`）；全能大师关闭 RAG 知识块注入（见 `ImageStudioSkillIds`）。
-  - **会话**：`image_studio_sessions` / `image_studio_session_images`（SQL 见 `backend/src/main/resources/db/`）。
+  - **会话**：`image_studio_sessions` / `image_studio_session_images`（DDL 已并入 `docs/schema-mysql.sql`；`backend/src/main/resources/db/README.md` 为说明）。
 - **数据流**：前端 `POST /api/image-studio/nano-banana/*` → Orchestrator 组 prompt → `generateContent` → 二进制图 → **COS** → 返回 URL / 会话归档。
 
 ### 3. RAG 知识库
 
-- **职责**：超级管理员维护文档、向量化入库、对话/作图侧检索注入。
+- **职责**：超级管理员维护文档、向量化入库；**作图**与「提示词优化」等接口使用向量检索；标准 **`/api/chat` / `/api/chat/stream` 不在此路径注入 Qdrant**（见 `ChatController` 注释与上文 A 节）。
 - **关键文件**：`RagAdminController.java`、`RagService.java`、`KnowledgeBaseView.vue`（前端）。
-- **要点**：MySQL `knowledge_documents` 元数据 + **Qdrant** 向量；`uigpt.rag.*` 开关与超时；作图检索 `retrieveKnowledgeBlockForImage`。
+- **要点**：MySQL `knowledge_documents` 元数据 + **Qdrant** 向量；`uigpt.rag.*` 开关与超时；作图三阶段内检索 `retrieveKnowledgeBlockForImage`；扩写优化用 `augmentPromptForImage`。
 - **数据流**：上传 → 解析分块 → embedding → upsert Qdrant → 写 MySQL；读列表走 MySQL，检索走 Qdrant。
 
 ### 4. 用户、鉴权与积分
@@ -110,8 +246,9 @@ graph TD
 ### 5. 提示词与技能广场（前端）
 
 - **职责**：提示词模板 CRUD（超管）；技能卡片管理（Pinia + `localStorage`），与图片工作台技能下拉联动。
+- **前后端对齐**：见上文 **「后端流程详解」→ C. 技能选择**（`studioSkillId` 后端仅两档策略、自建 id 回落规则）。
 - **关键文件**：`PromptTemplateController.java` / `AdminPromptTemplateController.java`；前端 `PromptsView.vue`、`SkillPlaza.vue`、`stores/skillStore.js`。
-- **要点**：技能数据当前**前端持久化**；后端仍按 `studioSkillId` 字符串路由 Prompt 策略。
+- **要点**：技能元数据当前**前端持久化**；后端 Prompt 策略以 `ImageStudioSkillIds` 为准，扩展技能需改后端。
 
 ### 6. 其它页面
 
@@ -126,12 +263,9 @@ graph TD
 
 ## 数据库设计概览
 
-**基线脚本**：`docs/schema-mysql.sql`（`users`、`chat_conversations`、`chat_messages`、`chat_conversation_images`、`chat_models`、`prompt_templates` 等）。
+**一键建库**：`docs/schema-mysql.sql`（含 `users`、`chat_*`、`chat_models`、`prompt_templates`、`knowledge_documents`、`image_studio_sessions` / `image_studio_session_images`、`site_mail_*` 等；**新环境只执行此文件即可**）。
 
-**增量/扩展**（按需执行，路径在 `backend/src/main/resources/db/`）：
-
-- `knowledge_documents.mysql.sql` — 知识库文档表。
-- `image_studio_sessions.mysql.sql` / `image_studio_sessions_add_studio_skill_id*.sql` — 图片工作台会话与 `studio_skill_id` 列。
+**已有老库缺列**：`docs/migrate-incremental-columns.sql`（可重复执行）。拆分 DDL 已废弃，说明见 `backend/src/main/resources/db/README.md`。
 
 **文字版 ER 关系**：
 
@@ -148,7 +282,7 @@ graph TD
 uigpt/
 ├── README.md                 # 本文件
 ├── docs/
-│   ├── schema-mysql.sql      # MySQL 基线建表
+│   ├── schema-mysql.sql      # MySQL 一键建库（全业务表）
 │   └── setup.md              # 环境补充说明
 ├── frontend/                 # Vue 3 + Vite
 │   ├── src/
@@ -169,7 +303,7 @@ uigpt/
 │   │   └── config/
 │   ├── src/main/resources/
 │   │   ├── application.yml   # 主配置（占位符引用环境变量）
-│   │   └── db/               # 增量 SQL
+│   │   └── db/               # DDL 说明（README）；建表执行 docs/schema-mysql.sql
 │   └── pom.xml
 ├── docker/                   # 镜像构建与 TCR 推送说明
 └── skills/                   # 可选 Cursor Skill（如 frontend-design-3）
@@ -188,9 +322,8 @@ uigpt/
 
 ### 数据库
 
-1. 执行 `docs/schema-mysql.sql`。
-2. 若用知识库：执行 `backend/src/main/resources/db/knowledge_documents.mysql.sql`。
-3. 若用图片工作台会话：执行 `backend/src/main/resources/db/image_studio_sessions.mysql.sql`，已有库可执行 `image_studio_sessions_add_studio_skill_id*.sql` 补列。
+1. 在 MySQL 中执行 **`docs/schema-mysql.sql`**（一次创建全部业务表，含知识库与图片工作台会话、站内信等）。
+2. 若为**多年前初始化的旧库**缺列，再执行 **`docs/migrate-incremental-columns.sql`**（可重复执行）。
 
 ### 后端
 
@@ -282,6 +415,8 @@ location /api/ {
 
 - README 按当前仓库结构重写：补充 Image Studio、Gemini `generateContent`、技能广场、版本号与 `backend/.env` 说明。
 - 保留原「环境变量 / 知识库 / 启动」要点并归档至对应章节。
+- **补充**：后端流程详解（对话多模态分支、图片三阶段与 COS 落库、对话技能 vs `studioSkillId` 及前后端一致性说明）；修正「主对话不经 Qdrant 注入」表述。
+- **数据库**：`docs/schema-mysql.sql` 合并原 `backend/src/main/resources/db/*.mysql.sql` 拆脚，一键建全表；`db/` 下保留 `README.md` 说明。
 
 ### v1.0.0
 
@@ -294,7 +429,7 @@ location /api/ {
 - **无法启动 / IllegalStateException**：`UIGPT_JWT_SECRET` 未设或过短。
 - **Could not resolve placeholder**：必填 `DB_*` 或数据源相关未配置。
 - **对话 503**：未配置任一对话 API Key。
-- **图片工作台列不存在**：执行 `image_studio_sessions_add_studio_skill_id*.sql` 迁移。
+- **图片工作台列不存在 / 表不存在**：新库请重新执行完整 **`docs/schema-mysql.sql`**；旧库执行 **`docs/migrate-incremental-columns.sql`** 或按实体手工 `ALTER`。
 - **前端 401**：JWT 过期或无效。
 
 ---
