@@ -13,6 +13,19 @@ export function nanoBananaTextToImage(payload, axiosConfig = {}) {
   })
 }
 
+const NB_PAIR_TIMEOUT_MS = Math.max(NB_TIMEOUT_MS, 180_000)
+
+/**
+ * Nano Banana 文生图多路并行（默认 2 路，可选 candidateCount）。
+ * 响应含 first、second、可选 extraSlots、recommendedSlot（服务端 Judge 开启时）。
+ */
+export function nanoBananaTextToImagePair(payload, axiosConfig = {}) {
+  return http.post('/image-studio/nano-banana/text-to-image-pair', { useRag: true, ...payload }, {
+    timeout: NB_PAIR_TIMEOUT_MS,
+    ...axiosConfig,
+  })
+}
+
 /**
  * Nano Banana Pro 图片编辑（text + 多图 inlineData）。
  * @param {{ prompt: string, aspectRatio?: string, imageSize?: string, images: { mimeType?: string, dataBase64: string }[] }} payload
@@ -20,6 +33,14 @@ export function nanoBananaTextToImage(payload, axiosConfig = {}) {
 export function nanoBananaEdit(payload, axiosConfig = {}) {
   return http.post('/image-studio/nano-banana/edit', { useRag: true, ...payload }, {
     timeout: NB_TIMEOUT_MS,
+    ...axiosConfig,
+  })
+}
+
+/** Nano Banana 图片编辑多路并行。 */
+export function nanoBananaEditPair(payload, axiosConfig = {}) {
+  return http.post('/image-studio/nano-banana/edit-pair', { useRag: true, ...payload }, {
+    timeout: NB_PAIR_TIMEOUT_MS,
     ...axiosConfig,
   })
 }

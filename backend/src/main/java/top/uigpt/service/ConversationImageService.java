@@ -13,8 +13,12 @@ import top.uigpt.dto.ConversationImageResponse;
 import top.uigpt.entity.ChatConversation;
 import top.uigpt.entity.ChatConversationImage;
 import top.uigpt.entity.ChatMessageRow;
+import top.uigpt.entity.ImageStudioSession;
+import top.uigpt.entity.ImageStudioSessionImage;
 import top.uigpt.entity.User;
 import top.uigpt.repository.ChatConversationImageRepository;
+import top.uigpt.repository.ImageStudioSessionImageRepository;
+import top.uigpt.repository.ImageStudioSessionRepository;
 import top.uigpt.repository.ChatConversationRepository;
 import top.uigpt.repository.ChatMessageRowRepository;
 import top.uigpt.repository.UserRepository;
@@ -52,6 +56,47 @@ public class ConversationImageService {
     /** {@link ChatConversation#studioChannel}：每用户一条视频工作台归档会话 */
     public static final String STUDIO_CHANNEL_VIDEO = "video-studio";
 
+    /** 工作台工具 id（前端 activeTool）→ {@link ChatConversationImage#skillId}，用于作品库筛选与展示 */
+    public static String imageStudioToolSkillId(String studioToolId) {
+        if (studioToolId == null || studioToolId.isBlank()) {
+            return IMAGE_STUDIO_SKILL_ID;
+        }
+        String t = studioToolId.strip().toLowerCase(Locale.ROOT);
+        return switch (t) {
+            case "txt2img" -> "studio_txt2img";
+            case "img2img" -> "studio_img2img";
+            case "inpaint" -> "studio_inpaint";
+            case "outpaint" -> "studio_outpaint";
+            case "enhance" -> "studio_enhance";
+            case "style" -> "studio_style";
+            default -> IMAGE_STUDIO_SKILL_ID;
+        };
+    }
+
+    /** 作品库 / 删除逻辑：是否为图片工作台归档 skill（含各工具子类） */
+    public static boolean isImageStudioWorkbenchGallerySkill(String skillId) {
+        if (skillId == null || skillId.isBlank()) {
+            return false;
+        }
+        return IMAGE_STUDIO_SKILL_ID.equals(skillId) || skillId.startsWith("studio_");
+    }
+
+    public static String imageStudioSkillLabelZh(String skillId) {
+        if (skillId == null || skillId.isBlank()) {
+            return "图片创作";
+        }
+        return switch (skillId) {
+            case "studio_txt2img" -> "文生图";
+            case "studio_img2img" -> "图生图";
+            case "studio_inpaint" -> "局部重绘";
+            case "studio_outpaint" -> "智能扩图";
+            case "studio_enhance" -> "画质增强";
+            case "studio_style" -> "风格迁移";
+            case IMAGE_STUDIO_SKILL_ID -> "图片创作";
+            default -> "图片创作";
+        };
+    }
+
     private final UserRepository userRepository;
     private final ChatConversationRepository conversationRepository;
     private final ChatConversationImageRepository imageRepository;
@@ -60,6 +105,8 @@ public class ConversationImageService {
     private final ApiYiImageService apiYiImageService;
     private final PointsService pointsService;
     private final RagService ragService;
+    private final ImageStudioSessionImageRepository imageStudioSessionImageRepository;
+    private final ImageStudioSessionRepository imageStudioSessionRepository;
 
     public List<ConversationImageResponse> listForUser(
             String username, Long conversationId, int offset, int limit) {
@@ -330,24 +377,21 @@ public class ConversationImageService {
      */
     @Transactional
     public ChatConversationImage persistImageStudioGeneration(String username, byte[] imageBytes) {
-        return persistImageStudioGeneration(username, imageBytes, null, null);
+        return persistImageStudioGeneration(username, imageBytes, null, null, true, null);
     }
 
     @Transactional
     public ChatConversationImage persistImageStudioGeneration(
             String username, byte[] imageBytes, String mimeTypeHint) {
-        return persistImageStudioGeneration(username, imageBytes, mimeTypeHint, null, true);
+        return persistImageStudioGeneration(username, imageBytes, mimeTypeHint, null, true, null);
     }
 
     @Transactional
     public ChatConversationImage persistImageStudioGeneration(
             String username, byte[] imageBytes, String mimeTypeHint, String userPrompt) {
-        return persistImageStudioGeneration(username, imageBytes, mimeTypeHint, userPrompt, true);
+        return persistImageStudioGeneration(username, imageBytes, mimeTypeHint, userPrompt, true, null);
     }
 
-    /**
-     * @param appendChatArchive 为 false 时仅写 COS/图片表，不向工作台归档会话追加 user/assistant 消息（用于同一次动作的第二张候选，避免重复「用户提示」气泡）。
-     */
     @Transactional
     public ChatConversationImage persistImageStudioGeneration(
             String username,
@@ -355,6 +399,22 @@ public class ConversationImageService {
             String mimeTypeHint,
             String userPrompt,
             boolean appendChatArchive) {
+        return persistImageStudioGeneration(
+                username, imageBytes, mimeTypeHint, userPrompt, appendChatArchive, null);
+    }
+
+    /**
+     * @param appendChatArchive 为 false 时仅写 COS/图片表，不向工作台归档会话追加 user/assistant 消息（用于同一次动作的第二张候选，避免重复「用户提示」气泡）。
+     * @param studioToolId 可选：txt2img / img2img 等，用于作品库 skill 分类
+     */
+    @Transactional
+    public ChatConversationImage persistImageStudioGeneration(
+            String username,
+            byte[] imageBytes,
+            String mimeTypeHint,
+            String userPrompt,
+            boolean appendChatArchive,
+            String studioToolId) {
         if (!objectStorageService.isReady()) {
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, objectStorageService.getUnavailableReason());
@@ -391,7 +451,7 @@ public class ConversationImageService {
         row.setConversationId(conv.getId());
         row.setUserId(user.getId());
         row.setMessageSortOrder(assistantOrder);
-        row.setSkillId(IMAGE_STUDIO_SKILL_ID);
+        row.setSkillId(imageStudioToolSkillId(studioToolId));
         row.setObjectKey(objectKey);
         row.setImageUrl(url);
         row.setFavorite(false);
@@ -407,6 +467,46 @@ public class ConversationImageService {
             appendStudioExchange(conv, userLine, assistantLine);
         }
         return row;
+    }
+
+    /**
+     * 图片会话已写入 {@link ImageStudioSessionImage} 后，再写一条 {@link ChatConversationImage}（同一 object_key）进作品库。
+     */
+    @Transactional
+    public void appendImageStudioSessionWorkToGallery(
+            String username, ImageStudioSessionImage sessionImage, String studioToolId) {
+        if (sessionImage == null) {
+            return;
+        }
+        User user = requireUser(username);
+        imageStudioSessionRepository
+                .findByIdAndUserId(sessionImage.getSessionId(), user.getId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "图片会话不存在"));
+        ChatConversation conv =
+                getOrCreateStudioConversation(user, STUDIO_CHANNEL_IMAGE, "图片创作工作台");
+        int baseOrder = messageRowRepository.maxSortOrderByConversationId(conv.getId());
+        ChatConversationImage row = new ChatConversationImage();
+        row.setConversationId(conv.getId());
+        row.setUserId(user.getId());
+        row.setMessageSortOrder(baseOrder + 1);
+        row.setSkillId(imageStudioToolSkillId(studioToolId));
+        row.setObjectKey(sessionImage.getObjectKey());
+        row.setImageUrl(sessionImage.getImageUrl());
+        row.setFavorite(false);
+        imageRepository.save(row);
+    }
+
+    /** 删除图片会话前：移除作品库中与该 object_key 对应的镜像行（不删 COS，由调用方删对象）。 */
+    @Transactional
+    public void deleteStudioGalleryMirrorsByObjectKey(long userId, String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) {
+            return;
+        }
+        for (ChatConversationImage row : imageRepository.findByUserIdAndObjectKey(userId, objectKey)) {
+            if (isImageStudioWorkbenchGallerySkill(row.getSkillId())) {
+                imageRepository.delete(row);
+            }
+        }
     }
 
     /**
@@ -727,7 +827,7 @@ public class ConversationImageService {
                                 () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "图片不存在"));
         if (!favorite
                 && img.getConversationId() == null
-                && !IMAGE_STUDIO_SKILL_ID.equals(img.getSkillId())
+                && !isImageStudioWorkbenchGallerySkill(img.getSkillId())
                 && !VIDEO_STUDIO_SKILL_ID.equals(img.getSkillId())) {
             objectStorageService.remove(img.getObjectKey());
             imageRepository.delete(img);
@@ -765,8 +865,41 @@ public class ConversationImageService {
                         .filter(r -> user.getId().equals(r.getUserId()))
                         .orElseThrow(
                                 () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "图片不存在"));
-        objectStorageService.remove(img.getObjectKey());
+        String objectKey = img.getObjectKey();
+        removeLinkedStudioSessionImageIfOwned(user.getId(), objectKey);
+        objectStorageService.remove(objectKey);
         imageRepository.delete(img);
+    }
+
+    private void removeLinkedStudioSessionImageIfOwned(long userId, String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) {
+            return;
+        }
+        imageStudioSessionImageRepository
+                .findByObjectKey(objectKey)
+                .ifPresent(
+                        row -> {
+                            ImageStudioSession session =
+                                    imageStudioSessionRepository
+                                            .findByIdAndUserId(row.getSessionId(), userId)
+                                            .orElse(null);
+                            if (session == null) {
+                                return;
+                            }
+                            imageStudioSessionImageRepository.delete(row);
+                            int remaining =
+                                    (int) imageStudioSessionImageRepository.countBySessionId(session.getId());
+                            session.setImageCount(Math.max(0, remaining));
+                            imageStudioSessionImageRepository
+                                    .findTopBySessionIdOrderBySortOrderDesc(session.getId())
+                                    .ifPresentOrElse(
+                                            top ->
+                                                    session.setLastImageUrl(
+                                                            objectStorageService.browserReadableUrl(
+                                                                    top.getObjectKey())),
+                                            () -> session.setLastImageUrl(null));
+                            imageStudioSessionRepository.save(session);
+                        });
     }
 
     @Transactional

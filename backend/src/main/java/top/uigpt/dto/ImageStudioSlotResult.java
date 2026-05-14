@@ -25,4 +25,7 @@ public class ImageStudioSlotResult {
     private String imageUrl;
 
     private boolean favorite;
+
+    /** 为 true 时 {@link #imageId} 为图片会话内图片 id */
+    private boolean sessionImage;
 }

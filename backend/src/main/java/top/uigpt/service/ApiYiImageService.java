@@ -19,6 +19,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.server.ResponseStatusException;
 import top.uigpt.UserFacingMessages;
 import top.uigpt.config.AppProperties;
+import top.uigpt.imagestudio.ImageStudioSkillIds;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -312,14 +313,18 @@ public class ApiYiImageService {
     /**
      * 第一阶段：从合并后的用户输入解析结构化意图 JSON（含 {@code rag_embedding_query} 供向量检索）。未配 API 或失败时返回兜底
      * JSON。
+     *
+     * @param studioSkillId 与前端一致，如 {@link ImageStudioSkillIds#INTERIOR_DESIGNER}
      */
-    public String imageStudioPhase1IntentJson(String merged, String aspectRatio, String imageSize) {
+    public String imageStudioPhase1IntentJson(
+            String merged, String aspectRatio, String imageSize, String studioSkillId) {
+        String skill = ImageStudioSkillIds.normalize(studioSkillId);
         String m = merged == null ? "" : merged.strip();
         if (m.isEmpty()) {
-            return fallbackIntentJson("");
+            return fallbackIntentJson("", skill);
         }
         if (!isReady()) {
-            return fallbackIntentJson(m);
+            return fallbackIntentJson(m, skill);
         }
         final int maxIn = 8000;
         if (m.length() > maxIn) {
@@ -336,12 +341,12 @@ public class ApiYiImageService {
                         + m;
         String raw =
                 chatCompletionImageStudio(
-                        ImageStudioIntentPrompts.PHASE1_INTENT_SYSTEM,
+                        ImageStudioSkillPrompts.phase1IntentSystem(skill),
                         user,
                         Math.min(1024, Math.max(256, interiorPromptOptimizeMaxTokensResolved() / 2)),
                         0.25);
         if (raw == null || raw.isBlank()) {
-            return fallbackIntentJson(m);
+            return fallbackIntentJson(m, skill);
         }
         String cleaned = sanitizeOptimizedPrompt(raw);
         try {
@@ -349,17 +354,17 @@ public class ApiYiImageService {
             JsonNode n = objectMapper.readTree(json);
             String rq = n.path("rag_embedding_query").asText("").strip();
             if (rq.isBlank()) {
-                return fallbackIntentJson(m);
+                return fallbackIntentJson(m, skill);
             }
             return json;
         } catch (Exception e) {
             log.warn("图片工作台第一阶段意图 JSON 解析失败: {}", e.toString());
-            return fallbackIntentJson(m);
+            return fallbackIntentJson(m, skill);
         }
     }
 
     /**
-     * 第三阶段：综合意图 JSON + 知识库片段 + 用户原文，输出家装英文 SD 的 JSON（正/负提示合并为一段）。失败时回退为「知识块
+     * 第三阶段：综合意图 JSON + 知识库片段 + 用户原文，输出英文 SD 的 JSON（正/负提示合并为一段）。失败时回退为「知识块
      * + 原文」或原文。
      */
     public String imageStudioPhase3FinalPrompt(
@@ -367,7 +372,9 @@ public class ApiYiImageService {
             String phase1IntentJson,
             String ragKnowledgeBlock,
             String aspectRatio,
-            String imageSize) {
+            String imageSize,
+            String studioSkillId) {
+        String skill = ImageStudioSkillIds.normalize(studioSkillId);
         String m = merged == null ? "" : merged.strip();
         String intent = phase1IntentJson == null ? "{}" : phase1IntentJson.strip();
         String rag = ragKnowledgeBlock == null ? "" : ragKnowledgeBlock.strip();
@@ -379,9 +386,7 @@ public class ApiYiImageService {
         }
         final int maxIn = 8000;
         String mCut = m.length() > maxIn ? m.substring(0, maxIn) : m;
-        String sys =
-                InteriorNanoBananaPromptOptimizer.SYSTEM_PROMPT
-                        + ImageStudioIntentPrompts.PHASE3_SYSTEM_APPENDIX;
+        String sys = ImageStudioSkillPrompts.phase3SystemCombined(skill);
         String user =
                 InteriorNanoBananaPromptOptimizer.buildPhase3UserMessage(
                         mCut, intent, rag, aspectRatio, imageSize);
@@ -415,7 +420,10 @@ public class ApiYiImageService {
         return ragBlock + "\n\n" + userText;
     }
 
-    private String fallbackIntentJson(String mergedSnippet) {
+    private String fallbackIntentJson(String mergedSnippet, String studioSkillId) {
+        if (ImageStudioSkillIds.UNIVERSAL_MASTER.equals(ImageStudioSkillIds.normalize(studioSkillId))) {
+            return fallbackIntentJsonUniversal(mergedSnippet);
+        }
         try {
             ObjectNode o = objectMapper.createObjectNode();
             o.put("room", "living room");
@@ -437,6 +445,40 @@ public class ApiYiImageService {
                     + "\"material_light_furniture\":[],\"constraints\":\"\","
                     + "\"rag_embedding_query\":\"modern minimalist living room interior design photorealistic\"}";
         }
+    }
+
+    /** 全能大师：兜底意图 JSON，不预设室内题材。 */
+    private String fallbackIntentJsonUniversal(String mergedSnippet) {
+        try {
+            ObjectNode o = objectMapper.createObjectNode();
+            o.put("subject_en", "");
+            o.put("mood_en", "");
+            o.putArray("style_tags");
+            o.putArray("style_en_hints");
+            String c = mergedSnippet == null ? "" : mergedSnippet.strip();
+            if (c.length() > 800) {
+                c = c.substring(0, 800);
+            }
+            o.put("constraints", c);
+            String ascii = universalIntentAsciiKeywords(c);
+            String rq =
+                    ascii.length() >= 12
+                            ? (ascii.length() > 500 ? ascii.substring(0, 500) : ascii)
+                            : "creative high quality image detailed natural lighting coherent composition";
+            o.put("rag_embedding_query", rq);
+            return objectMapper.writeValueAsString(o);
+        } catch (Exception e) {
+            return "{\"subject_en\":\"\",\"mood_en\":\"\",\"style_tags\":[],\"style_en_hints\":[],\"constraints\":\"\","
+                    + "\"rag_embedding_query\":\"creative high quality image detailed natural lighting\"}";
+        }
+    }
+
+    private static String universalIntentAsciiKeywords(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String s = raw.replaceAll("[^\\x20-\\x7E]+", " ").replaceAll("\\s+", " ").strip();
+        return s.length() > 500 ? s.substring(0, 500) : s;
     }
 
     private String chatCompletionImageStudio(
@@ -956,6 +998,13 @@ public class ApiYiImageService {
         ObjectNode genCfg = root.putObject("generationConfig");
         putGemini3ImageFormatInGenerationConfig(genCfg, aspectRatio, imageSize);
 
+        ObjectNode logCopy = root.deepCopy();
+        redactNanoBananaRequestBodyForLog(logCopy);
+        log.info(
+                "[图片工作台] Nano Banana 文生图 -> APIYi generateContent 请求 url={} body={}",
+                url,
+                truncate(logCopy.toString(), 20_000));
+
         try {
             String raw =
                     apiYiRestClient
@@ -1014,6 +1063,13 @@ public class ApiYiImageService {
 
         ObjectNode genCfg = root.putObject("generationConfig");
         putGemini3ImageFormatInGenerationConfig(genCfg, aspectRatio, imageSize);
+
+        ObjectNode logCopy = root.deepCopy();
+        redactNanoBananaRequestBodyForLog(logCopy);
+        log.info(
+                "[图片工作台] Nano Banana 图片编辑 -> APIYi generateContent 请求 url={} body={}",
+                url,
+                truncate(logCopy.toString(), 20_000));
 
         try {
             String raw =
@@ -1693,9 +1749,54 @@ public class ApiYiImageService {
         }
     }
 
+    /**
+     * 日志中的 generateContent 请求体：将 inline base64 替换为长度占位，避免日志过大与敏感二进制刷屏。
+     */
+    private static void redactNanoBananaRequestBodyForLog(ObjectNode root) {
+        JsonNode contentsNode = root.path("contents");
+        if (!contentsNode.isArray()) {
+            return;
+        }
+        for (JsonNode turn : contentsNode) {
+            if (!turn.isObject()) {
+                continue;
+            }
+            JsonNode partsNode = turn.path("parts");
+            if (!partsNode.isArray()) {
+                continue;
+            }
+            for (JsonNode part : partsNode) {
+                if (!part.isObject()) {
+                    continue;
+                }
+                ObjectNode partObj = (ObjectNode) part;
+                ObjectNode inline = null;
+                if (partObj.has("inlineData")) {
+                    inline = (ObjectNode) partObj.get("inlineData");
+                } else if (partObj.has("inline_data")) {
+                    inline = (ObjectNode) partObj.get("inline_data");
+                }
+                if (inline != null && inline.has("data")) {
+                    JsonNode d = inline.get("data");
+                    int len = d != null && d.isTextual() ? d.asText("").length() : 0;
+                    inline.put("data", "[redacted base64 chars=" + len + "]");
+                }
+            }
+        }
+    }
+
     private static String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 800 ? s.substring(0, 800) + "…" : s;
+        return truncate(s, 800);
+    }
+
+    private static String truncate(String s, int maxChars) {
+        if (s == null) {
+            return "";
+        }
+        if (maxChars <= 0) {
+            return "";
+        }
+        return s.length() > maxChars ? s.substring(0, maxChars) + "…" : s;
     }
 
     private byte[] imageEntryToBytes(JsonNode entry) {

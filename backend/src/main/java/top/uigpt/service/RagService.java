@@ -152,18 +152,28 @@ public class RagService {
     public String retrieveKnowledgeBlockForImage(
             String embeddingQueryText, Boolean useRag, String ragCollectionOverride) {
         if (Boolean.FALSE.equals(useRag)) {
+            log.info("[作图RAG] 跳过检索：useRag=false（例如 studioSkillId=universal_master 关闭知识块）");
             return "";
         }
         AppProperties.Rag cfg = appProperties.getRag();
         if (!cfg.isEnabled() || !isRagVectorPipelineReady(cfg)) {
+            log.info(
+                    "[作图RAG] 跳过检索：RAG 未启用或向量链路未就绪 enabled={} ready={}",
+                    cfg.isEnabled(),
+                    isRagVectorPipelineReady(cfg));
             return "";
         }
         String collection = resolveCollectionForImage(ragCollectionOverride, cfg);
         if (collection == null) {
+            log.info(
+                    "[作图RAG] 跳过检索：无有效 Qdrant 集合名 override={} defaultCollection={}",
+                    ragCollectionOverride,
+                    cfg.getCollection());
             return "";
         }
         String query = embeddingQueryText == null ? "" : embeddingQueryText.strip();
         if (query.isBlank()) {
+            log.info("[作图RAG] 跳过检索：embedding 查询句为空 collection={}", collection);
             return "";
         }
         int maxQ = Math.max(256, cfg.getMaxQueryChars());
@@ -173,14 +183,26 @@ public class RagService {
         try {
             List<Float> vector = embedQuery(cfg, query);
             if (vector.isEmpty()) {
+                log.info("[作图RAG] 检索未注入：embedding 返回空向量 collection={} queryLen={}", collection, query.length());
                 return "";
             }
             List<ScoredChunk> chunks = search(cfg, collection, vector);
             if (chunks.isEmpty()) {
+                log.info(
+                        "[作图RAG] 检索未注入：Qdrant 无命中 collection={} queryLen={}（集合无数据或相似度过低）",
+                        collection,
+                        query.length());
                 return "";
             }
             String block = buildContextBlock(chunks);
-            return RAG_SYSTEM_HEADER + block;
+            String full = RAG_SYSTEM_HEADER + block;
+            log.info(
+                    "[作图RAG] 已注入知识块 collection={} chunks={} queryLen={} blockLen={}",
+                    collection,
+                    chunks.size(),
+                    query.length(),
+                    full.length());
+            return full;
         } catch (Exception e) {
             log.warn("作图 RAG 仅检索失败: {}", e.getMessage());
             return "";

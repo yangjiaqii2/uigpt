@@ -1,10 +1,9 @@
 package top.uigpt.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -14,11 +13,14 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 import top.uigpt.UserFacingMessages;
+import top.uigpt.chat.SseClientJsonEscapes;
+import top.uigpt.config.AsyncConfig;
 import top.uigpt.dto.ChatMessageDto;
 import top.uigpt.dto.ChatRequest;
 import top.uigpt.dto.ChatResponse;
+import top.uigpt.dto.PreparedChatStreamContext;
 import top.uigpt.config.AppProperties;
 import top.uigpt.entity.User;
 import top.uigpt.repository.UserRepository;
@@ -29,13 +31,11 @@ import top.uigpt.service.PointsService;
 
 import org.springframework.dao.DataAccessException;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
@@ -47,10 +47,12 @@ public class ChatController {
     private final ChatService chatService;
     private final JwtService jwtService;
     private final ConversationService conversationService;
-    private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
     private final UserRepository userRepository;
     private final PointsService pointsService;
+
+    @Qualifier(AsyncConfig.SSE_CHAT_FORWARD_EXECUTOR)
+    private final Executor sseChatForwardExecutor;
 
     @PostMapping("/chat")
     public ChatResponse chat(
@@ -96,7 +98,7 @@ public class ChatController {
      * {@code {"delta":"片段"}} 正文增量；{@code {"done":true,"conversationId":n|null}} 结束；{@code {"error":"…"}} 失败。
      */
     @PostMapping("/chat/stream")
-    public ResponseEntity<StreamingResponseBody> streamChat(
+    public ResponseEntity<ResponseBodyEmitter> streamChat(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ChatRequest request) {
         String username = jwtService.parseUsername(authorization);
@@ -107,104 +109,77 @@ public class ChatController {
         if (streamUserId != null) {
             pointsService.assertAndDeduct(streamUserId, streamCost, "chat_stream_turn");
         }
-        final AtomicBoolean streamModelDone = new AtomicBoolean(false);
+        final AtomicBoolean streamFinishedOk = new AtomicBoolean(false);
+        final AtomicBoolean anyDeltaSent = new AtomicBoolean(false);
 
-        StreamingResponseBody body =
-                outputStream -> {
-                    BufferedWriter writer =
-                            new BufferedWriter(
-                                    new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
+        ChatRequest forModel =
+                chatPassthrough() ? request : conversationService.injectSessionMemory(username, request);
+        boolean allowVision = username != null;
+        PreparedChatStreamContext prepared =
+                chatService.prepareStreamChat(forModel, allowVision, username);
+
+        ResponseBodyEmitter emitter = new ResponseBodyEmitter(0L);
+        Runnable refundIfIncomplete =
+                () -> {
+                    if (streamUserId != null && !streamFinishedOk.get()) {
+                        pointsService.refund(streamUserId, streamCost, "chat_stream_refund");
+                    }
+                };
+        emitter.onCompletion(refundIfIncomplete);
+        emitter.onTimeout(refundIfIncomplete);
+
+        sseChatForwardExecutor.execute(
+                () -> {
                     try {
-                        // 立刻占用响应并开始 chunked 传输，缩短浏览器「挂起无字节」观感；注释行不影响前端 data: 解析
-                        writer.write(": uigpt-handshake\n\n");
-                        writer.flush();
-                        ChatRequest forModel =
-                                chatPassthrough()
-                                        ? request
-                                        : conversationService.injectSessionMemory(username, request);
-                        // 流式对话不注入 RAG；知识库仅用于图片生成等接口
-                        boolean allowVision = username != null;
                         String fullReply =
-                                chatService.streamChat(
-                                        forModel,
-                                        delta -> {
-                                            try {
-                                                ObjectNode ev = objectMapper.createObjectNode();
-                                                ev.put("delta", delta);
-                                                writer.write("data: ");
-                                                writer.write(objectMapper.writeValueAsString(ev));
-                                                writer.write("\n\n");
-                                                writer.flush();
-                                            } catch (IOException e) {
-                                                throw new UncheckedIOException(e);
-                                            }
-                                        },
-                                        allowVision,
-                                        username);
-                        streamModelDone.set(true);
+                                chatService.forwardStreamToEmitter(prepared, emitter, anyDeltaSent);
+                        streamFinishedOk.set(true);
                         Long convId = null;
-                        if (username != null) {
-                            convId =
-                                    conversationService.syncAfterChat(
+                        try {
+                            if (username != null) {
+                                convId =
+                                        conversationService.syncAfterChat(
+                                                username,
+                                                request.getConversationId(),
+                                                request.getMessages(),
+                                                fullReply);
+                                if (!chatPassthrough()) {
+                                    conversationService.refreshSessionMemoryAfterTurn(
                                             username,
-                                            request.getConversationId(),
-                                            request.getMessages(),
+                                            convId,
+                                            lastUserMessage(request.getMessages()),
                                             fullReply);
-                            if (!chatPassthrough()) {
-                                conversationService.refreshSessionMemoryAfterTurn(
-                                        username,
-                                        convId,
-                                        lastUserMessage(request.getMessages()),
-                                        fullReply);
+                                }
                             }
+                        } catch (Exception db) {
+                            log.warn("流式对话落库或记忆刷新失败（上游已完成）", db);
                         }
-                        ObjectNode done = objectMapper.createObjectNode();
-                        done.put("done", true);
-                        if (convId != null) {
-                            done.put("conversationId", convId);
-                        } else {
-                            done.putNull("conversationId");
+                        try {
+                            emitter.send(SseClientJsonEscapes.sseDoneEvent(convId));
+                        } catch (IOException e) {
+                            log.warn("SSE done 写入失败", e);
                         }
-                        writer.write("data: ");
-                        writer.write(objectMapper.writeValueAsString(done));
-                        writer.write("\n\n");
-                        writer.flush();
-                    } catch (UncheckedIOException e) {
-                        log.warn("SSE 写入中断", e.getCause());
-                        if (streamUserId != null && !streamModelDone.get()) {
-                            pointsService.refund(streamUserId, streamCost, "chat_stream_refund");
-                        }
+                        emitter.complete();
                     } catch (VirtualMachineError e) {
                         throw e;
                     } catch (Throwable e) {
-                        if (streamUserId != null && !streamModelDone.get()) {
-                            pointsService.refund(streamUserId, streamCost, "chat_stream_refund");
-                        }
                         log.warn("流式对话失败", e);
-                        Exception ex = e instanceof Exception ? (Exception) e : new RuntimeException(e);
-                        streamWriteError(writer, ex);
+                        try {
+                            emitter.send(
+                                    SseClientJsonEscapes.sseErrorEvent(resolveStreamErrorMessage(e)));
+                        } catch (IOException ignored) {
+                        }
+                        emitter.completeWithError(
+                                e instanceof Exception ? (Exception) e : new RuntimeException(e));
                     }
-                };
+                });
 
         return ResponseEntity.ok()
                 .contentType(new MediaType("text", "event-stream", StandardCharsets.UTF_8))
                 .header("Cache-Control", "no-cache, no-transform")
                 .header("Connection", "keep-alive")
                 .header("X-Accel-Buffering", "no")
-                .body(body);
-    }
-
-    private void streamWriteError(BufferedWriter writer, Exception e) {
-        try {
-            ObjectNode err = objectMapper.createObjectNode();
-            String msg = resolveStreamErrorMessage(e);
-            err.put("error", msg);
-            writer.write("data: ");
-            writer.write(objectMapper.writeValueAsString(err));
-            writer.write("\n\n");
-            writer.flush();
-        } catch (IOException ignored) {
-        }
+                .body(emitter);
     }
 
     private static String resolveStreamErrorMessage(Throwable e) {

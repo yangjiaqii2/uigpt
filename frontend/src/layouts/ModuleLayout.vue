@@ -19,6 +19,7 @@ const ROUTE_TITLE_FALLBACK = {
   'studio-works': '作品库',
   knowledge: '知识库',
   prompts: '提示词',
+  'skill-plaza': '技能广场',
   'admin-site-mail': '站内信',
 }
 
@@ -98,6 +99,7 @@ const items = computed(() => {
       ? [{ to: '/knowledge', label: '知识库', sub: '接入', icon: '📚', requiresAuth: true }]
       : []),
     { to: '/prompts', label: '提示词', sub: '收藏', icon: '✦', requiresAuth: true },
+    { to: '/skill-plaza', label: '技能广场', sub: '分发', icon: '◆', requiresAuth: true },
   ]
   if (auth.isAdmin) {
     base.push(
@@ -139,6 +141,7 @@ function onDocClick(e) {
     e.target.closest?.('.delconv-shell') ||
     e.target.closest?.('.prm-modal-backdrop') ||
     e.target.closest?.('.prm-del-shell') ||
+    e.target.closest?.('.spl-modal-backdrop') ||
     e.target.closest?.('.site-mail-wrap') ||
     e.target.closest?.('.sm-shell')
   ) {

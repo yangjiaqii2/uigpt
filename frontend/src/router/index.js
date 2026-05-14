@@ -44,6 +44,12 @@ const router = createRouter({
           meta: { requiresAuth: true },
         },
         {
+          path: 'skill-plaza',
+          name: 'skill-plaza',
+          component: () => import('../views/SkillPlaza.vue'),
+          meta: { requiresAuth: true },
+        },
+        {
           path: 'admin/users',
           name: 'admin-users',
           component: () => import('../views/UserAdminView.vue'),

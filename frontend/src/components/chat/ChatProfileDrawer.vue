@@ -13,7 +13,7 @@ import { useSiteMailStore } from '../../stores/siteMail'
 
 const siteMailStore = useSiteMailStore()
 
-/** 构建时注入：package.json 的 version，或环境变量 VITE_APP_VERSION（如 CI / Docker 传镜像 tag） */
+/** 构建时注入：优先 backend/.env 的 VITE_APP_VERSION / version，其次 frontend/.env；展示统一为 vX.Y.Z */
 const displayAppVersion = computed(() => {
   const raw = String(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0')
   return raw.startsWith('v') ? raw : `v${raw}`

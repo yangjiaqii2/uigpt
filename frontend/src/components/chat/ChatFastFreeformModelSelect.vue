@@ -420,8 +420,8 @@ function onOptionEnter(optIndex) {
 .ffm-root {
   position: relative;
   display: flex;
-  flex: 1 1 200px;
-  min-width: 168px;
+  flex: 1 1 260px;
+  min-width: 218px;
 }
 
 .ffm-root--compact {
@@ -493,8 +493,8 @@ function onOptionEnter(optIndex) {
 
 .ffm-trigger--compact {
   position: relative;
-  width: 38px;
-  min-width: 38px;
+  width: 50px;
+  min-width: 50px;
   height: 38px;
   min-height: 38px;
   padding: 0;
@@ -505,8 +505,8 @@ function onOptionEnter(optIndex) {
 }
 
 .ffm-trigger--compact .ffm-trigger-letter {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   font-size: 10px;
   border-radius: 5px;
 }
@@ -912,7 +912,7 @@ html[data-theme='light'] .ffm-sheet-backdrop {
 
 @media (max-width: 768px) {
   .ffm-root {
-    flex: 1 1 140px;
+    flex: 1 1 182px;
     min-width: 0;
   }
 

@@ -4,9 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -17,21 +17,28 @@ import top.uigpt.chat.FastFreeformModelFallback;
 import top.uigpt.chat.FastFreeformModelIds;
 import top.uigpt.UserFacingMessages;
 import top.uigpt.config.AppProperties;
+import top.uigpt.config.UpstreamWebClientConfig;
+import top.uigpt.chat.SseClientJsonEscapes;
+import top.uigpt.chat.SseOpenAiDeltaParser;
+import top.uigpt.chat.Utf8LineAssembler;
 import top.uigpt.dto.ChatMessageDto;
 import top.uigpt.dto.ChatRequest;
 import top.uigpt.dto.ChatResponse;
+import top.uigpt.dto.PreparedChatStreamContext;
 import top.uigpt.entity.ChatModel;
 import top.uigpt.repository.ChatModelRepository;
 
-import java.io.BufferedReader;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
+import reactor.core.Exceptions;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.SignalType;
+
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,7 +52,8 @@ import java.util.function.Consumer;
  * 上游对话走 OpenAI 兼容协议：{@code POST {base}/chat/completions}（流式 SSE 或非流式 JSON）。
  *
  * <p>与 API易「OpenAI 官方库使用」一致：等价于将官方 SDK 的 {@code base_url} 设为 {@code https://api.apiyi.com/v1}
- *（密钥用 API易 Key）。本类用 JDK {@link HttpClient} 与 {@link RestClient} 直接组 JSON，便于统一追加 GPT‑5、Claude
+ *（密钥用 API易 Key）。本类用 {@link org.springframework.web.reactive.function.client.WebClient}（流式 SSE）与
+ * {@link RestClient} 直接组 JSON，便于统一追加 GPT‑5、Claude
  * {@code output_config}、Gemini {@code reasoning_effort} 等与网关约定字段；无需再引入第三方 Java OpenAI 封装即可对齐文档。
  */
 @Slf4j
@@ -70,12 +78,13 @@ public class ChatService {
 
     private static final String MEMORY_MERGE_SYSTEM =
             "你是会话记忆整理助手。根据「旧记忆」和「本轮完整对话」（用户最后一轮提问 + 助手完整回复），"
-                    + "输出更新后的会话记忆，供后续多轮对话引用。\n"
+                    + "输出更新后的会话记忆，供本会话后续多轮对话引用。\n"
                     + "要求：\n"
                     + "1）只保留对后续对话有用的实体、偏好、约束、待办、结论、数字与专有名词；去掉寒暄与废话。\n"
                     + "2）用短句或条目，分号或换行分隔；总长度不超过800字。\n"
                     + "3）若本轮几乎没有可记住的新信息，只输出一个字：无\n"
-                    + "4）不要复述整段对话，不要加引号或 Markdown。";
+                    + "4）不要复述整段对话，不要加引号或 Markdown。\n"
+                    + "5）旧记忆与本轮内容均只来自同一聊天会话；不得引入其它会话、其它用户或站外臆测信息。";
 
     private final AppProperties appProperties;
     private final RestClient restClient;
@@ -83,7 +92,7 @@ public class ChatService {
     private final ChatModelRepository chatModelRepository;
     private final ModelApiKeyCipherService modelApiKeyCipherService;
     private final ApiYiImageService apiYiImageService;
-    private final HttpClient upstreamChatHttpClient;
+    private final WebClient upstreamChatWebClient;
 
     public ChatService(
             AppProperties appProperties,
@@ -92,14 +101,14 @@ public class ChatService {
             ChatModelRepository chatModelRepository,
             ModelApiKeyCipherService modelApiKeyCipherService,
             ApiYiImageService apiYiImageService,
-            @Qualifier("upstreamChatHttpClient") HttpClient upstreamChatHttpClient) {
+            @Qualifier(UpstreamWebClientConfig.UPSTREAM_CHAT_WEB_CLIENT) WebClient upstreamChatWebClient) {
         this.appProperties = appProperties;
         this.restClient = restClient;
         this.objectMapper = objectMapper;
         this.chatModelRepository = chatModelRepository;
         this.modelApiKeyCipherService = modelApiKeyCipherService;
         this.apiYiImageService = apiYiImageService;
-        this.upstreamChatHttpClient = upstreamChatHttpClient;
+        this.upstreamChatWebClient = upstreamChatWebClient;
     }
 
     private record ResolvedModelCall(String apiModelCode, String bearerApiKey, String baseUrl) {}
@@ -182,7 +191,7 @@ public class ChatService {
         return tryResolveFastFreeform(req, username).orElseGet(this::resolveUpstreamModel);
     }
 
-    /** 与 {@link #streamChat}、{@link #callOpenAiCompatible} 一致：空则用全局 {@code uigpt.ai.base-url} */
+    /** 与 {@link #prepareStreamChat}、{@link #callOpenAiCompatible} 一致：空则用全局 {@code uigpt.ai.base-url} */
     private String chatCompletionsEndpoint(String resolvedBaseUrlOverride) {
         String root =
                 resolvedBaseUrlOverride != null && !resolvedBaseUrlOverride.isBlank()
@@ -359,54 +368,12 @@ public class ChatService {
     }
 
     /**
-     * 解析 OpenAI 兼容 SSE 片段中的正文增量：{@code delta.content} 可能为字符串或（多模态）数组；少数网关误把增量放在
-     * {@code message.content}。
-     */
-    private static String streamingDeltaText(JsonNode container) {
-        if (container == null || container.isMissingNode()) {
-            return "";
-        }
-        String fromContent = extractStreamingContentPiece(container.path("content"));
-        if (!fromContent.isEmpty()) {
-            return fromContent;
-        }
-        return "";
-    }
-
-    private static String extractStreamingContentPiece(JsonNode contentNode) {
-        if (contentNode == null || contentNode.isMissingNode()) {
-            return "";
-        }
-        if (contentNode.isTextual()) {
-            return contentNode.asText("");
-        }
-        if (contentNode.isArray()) {
-            StringBuilder sb = new StringBuilder();
-            for (JsonNode part : contentNode) {
-                if (part == null || part.isNull()) {
-                    continue;
-                }
-                if (part.has("text")) {
-                    sb.append(part.path("text").asText(""));
-                } else if (part.isTextual()) {
-                    sb.append(part.asText(""));
-                }
-            }
-            return sb.toString();
-        }
-        return "";
-    }
-
-    /**
-     * OpenAI 兼容流式接口；按增量调用 {@code onDelta}，返回完整助手文本。
+     * 流式对话：在发起上游 HTTP 前完成鉴权侧所需的一切解析（由 Controller 先扣积分 / 注入记忆后调用）。
      *
-     * <p>API易自由对话：按模型族优先最强档位依次尝试；连接失败或网关类错误时自动降级下一候选，已向前端输出过正文则不再降级。
-     *
-     * @param allowVision 已登录用户为 {@code true} 且末条用户消息含参考图时：始终将图片以内联多模态并入主模型请求，不再先调用识图
-     *     摘要接口（避免两次上游调用拖慢首包）。
+     * @param allowVision 已登录用户为 {@code true} 且末条用户消息含参考图时：内联多模态并入主模型请求。
      */
-    public String streamChat(
-            ChatRequest request, Consumer<String> onDelta, boolean allowVision, String username) {
+    public PreparedChatStreamContext prepareStreamChat(
+            ChatRequest request, boolean allowVision, String username) {
         boolean passthrough = appProperties.getChat().isPassthrough();
         boolean inlineVision = !passthrough && useVisionInlineMultimodal(request, allowVision);
         ChatRequest req =
@@ -430,39 +397,72 @@ public class ChatService {
                         : inlineVision;
         boolean deepReasoning = Boolean.TRUE.equals(req.getDeepReasoning());
         List<String> candidates = chatModelCandidates(rm.apiModelCode(), deepReasoning, passthrough);
-        AtomicBoolean anyDeltaSent = new AtomicBoolean(false);
+        String url = chatCompletionsEndpoint(rm.baseUrl());
+        List<String> bodies = new ArrayList<>(candidates.size());
+        for (String apiModelCode : candidates) {
+            bodies.add(
+                    buildStreamRequestBodyJson(
+                            apiModelCode, messagesForUpstream, embedVision, passthrough));
+        }
+        return new PreparedChatStreamContext(url, apiKey, List.copyOf(bodies));
+    }
+
+    private String buildStreamRequestBodyJson(
+            String apiModelCode,
+            List<ChatMessageDto> messagesForUpstream,
+            boolean embedVisionImages,
+            boolean passthroughUpstream) {
+        ObjectNode body = objectMapper.createObjectNode();
+        int maxOut = Math.max(1, appProperties.getAi().getMaxOutputTokens());
+        putModelAndTokenLimits(body, apiModelCode, maxOut, true);
+        if (!passthroughUpstream) {
+            putClaudeOutputConfigIfApplicable(body, apiModelCode);
+            putGeminiReasoningEffortIfApplicable(body, apiModelCode);
+        }
+        putMessagesArray(body, messagesForUpstream, embedVisionImages, passthroughUpstream);
+        return body.toString();
+    }
+
+    /**
+     * WebClient 订阅上游 SSE 并立即 {@link ResponseBodyEmitter#send(Object)} 下行；在专用线程中阻塞
+     * {@code blockLast}（Tomcat 线程已返回）。
+     *
+     * @return 助手全文，供落库与会话记忆
+     */
+    public String forwardStreamToEmitter(
+            PreparedChatStreamContext ctx,
+            ResponseBodyEmitter emitter,
+            AtomicBoolean anyDeltaSentRef)
+            throws IOException {
+        emitter.send(": uigpt-handshake\n\n");
+        StringBuilder fullReply = new StringBuilder();
+        AtomicBoolean anyDelta = new AtomicBoolean(false);
         ResponseStatusException lastRecoverable = null;
-        for (int ci = 0; ci < candidates.size(); ci++) {
-            String apiModelCode = candidates.get(ci);
+        for (int ci = 0; ci < ctx.streamRequestJsonBodies().size(); ci++) {
+            String bodyJson = ctx.streamRequestJsonBodies().get(ci);
             try {
-                return streamChatSingleModel(
-                        rm,
-                        apiModelCode,
-                        messagesForUpstream,
-                        anyDeltaSent,
-                        onDelta,
-                        embedVision,
-                        passthrough);
-            } catch (StreamSendInterrupted e) {
-                Thread.currentThread().interrupt();
-                log.warn(
-                        "流式连接阶段线程被中断（常见于异步请求超时或客户端中止），不再转为 ResponseStatusException 以免 SSE 全局协商失败");
-                throw new IllegalStateException(UserFacingMessages.NETWORK_TRY_LATER, e);
+                consumeOneCandidateStream(
+                        ctx,
+                        bodyJson,
+                        emitter,
+                        piece -> {
+                            anyDelta.set(true);
+                            anyDeltaSentRef.set(true);
+                            fullReply.append(piece);
+                        });
+                return fullReply.toString();
             } catch (ResponseStatusException ex) {
-                if (anyDeltaSent.get()) {
+                if (anyDelta.get()) {
                     throw ex;
                 }
                 if (!isRecoverableModelFailure(ex)) {
                     throw ex;
                 }
-                boolean more = ci < candidates.size() - 1;
+                boolean more = ci < ctx.streamRequestJsonBodies().size() - 1;
                 if (more) {
-                    log.warn(
-                            "流式模型 {} 不可用（{}），降级尝试下一候选",
-                            apiModelCode,
-                            ex.getReason());
+                    log.warn("流式模型不可用（{}），降级尝试下一候选", ex.getReason());
                 } else {
-                    log.warn("流式模型 {} 不可用（{}），候选已用尽", apiModelCode, ex.getReason());
+                    log.warn("流式模型不可用（{}），候选已用尽", ex.getReason());
                 }
                 lastRecoverable = ex;
             }
@@ -473,111 +473,116 @@ public class ChatService {
         throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, UserFacingMessages.NETWORK_TRY_LATER);
     }
 
-    /** HTTP 发送阶段被中断，不参与降级重试 */
-    private static final class StreamSendInterrupted extends RuntimeException {
-        StreamSendInterrupted(InterruptedException cause) {
-            super(cause);
+    private void consumeOneCandidateStream(
+            PreparedChatStreamContext ctx,
+            String bodyJson,
+            ResponseBodyEmitter emitter,
+            Consumer<String> onDeltaPiece)
+            throws IOException {
+        Utf8LineAssembler lineAsm = new Utf8LineAssembler();
+        Flux<DataBuffer> flux =
+                upstreamChatWebClient
+                        .post()
+                        .uri(URI.create(ctx.completionsUrl()))
+                        .headers(
+                                h -> {
+                                    h.setBearerAuth(ctx.bearerApiKey());
+                                    h.set(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+                                    h.set(HttpHeaders.ACCEPT, MediaType.TEXT_EVENT_STREAM_VALUE);
+                                })
+                        .bodyValue(bodyJson)
+                        .exchangeToFlux(
+                                clientResponse -> {
+                                    int sc = clientResponse.statusCode().value();
+                                    if (sc != 200) {
+                                        return clientResponse
+                                                .bodyToMono(String.class)
+                                                .defaultIfEmpty("")
+                                                .flatMapMany(
+                                                        errBody -> {
+                                                            log.warn(
+                                                                    "模型流式请求失败 status={} body={}",
+                                                                    sc,
+                                                                    truncateForLog(errBody, 800));
+                                                            return Flux.error(upstreamChatFailure(sc));
+                                                        });
+                                    }
+                                    return clientResponse.bodyToFlux(DataBuffer.class);
+                                });
+        try {
+            flux.doOnNext(
+                            db -> {
+                                int n = db.readableByteCount();
+                                byte[] arr = new byte[n];
+                                db.read(arr);
+                                DataBufferUtils.release(db);
+                                try {
+                                    for (String line : lineAsm.feed(arr)) {
+                                        processUpstreamSseLine(emitter, line, onDeltaPiece);
+                                    }
+                                } catch (IOException e) {
+                                    throw new UncheckedIOException(e);
+                                }
+                            })
+                    .doFinally(
+                            sig -> {
+                                if (sig != SignalType.ON_COMPLETE) {
+                                    return;
+                                }
+                                String tail = lineAsm.flushRemainder();
+                                if (tail != null && !tail.isEmpty()) {
+                                    try {
+                                        processUpstreamSseLine(emitter, tail, onDeltaPiece);
+                                    } catch (IOException e) {
+                                        throw new UncheckedIOException(e);
+                                    }
+                                }
+                            })
+                    .blockLast(Duration.ofMinutes(10));
+        } catch (UncheckedIOException e) {
+            Throwable c = e.getCause();
+            if (c instanceof IOException io) {
+                throw io;
+            }
+            throw e;
+        } catch (RuntimeException e) {
+            Throwable u = Exceptions.unwrap(e);
+            if (u instanceof ResponseStatusException rse) {
+                throw rse;
+            }
+            if (e instanceof ResponseStatusException rse) {
+                throw rse;
+            }
+            log.warn("流式订阅异常", e);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, UserFacingMessages.NETWORK_TRY_LATER);
         }
     }
 
-    private String streamChatSingleModel(
-            ResolvedModelCall rm,
-            String apiModelCode,
-            List<ChatMessageDto> messagesForUpstream,
-            AtomicBoolean anyDeltaSent,
-            Consumer<String> onDelta,
-            boolean embedVisionImages,
-            boolean passthroughUpstream) {
-        String url = chatCompletionsEndpoint(rm.baseUrl());
-        ObjectNode body = objectMapper.createObjectNode();
-        int maxOut = Math.max(1, appProperties.getAi().getMaxOutputTokens());
-        putModelAndTokenLimits(body, apiModelCode, maxOut, true);
-        if (!passthroughUpstream) {
-            putClaudeOutputConfigIfApplicable(body, apiModelCode);
-            putGeminiReasoningEffortIfApplicable(body, apiModelCode);
+    private static void processUpstreamSseLine(
+            ResponseBodyEmitter emitter, String line, Consumer<String> onDeltaPiece) throws IOException {
+        String t = line.stripLeading();
+        if (t.isEmpty()) {
+            return;
         }
-        putMessagesArray(body, messagesForUpstream, embedVisionImages, passthroughUpstream);
-        String apiKey = rm.bearerApiKey();
-
-        HttpRequest httpReq =
-                HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .timeout(Duration.ofMinutes(10))
-                        .header("Authorization", "Bearer " + apiKey)
-                        .header("Content-Type", "application/json")
-                        .header("Accept", "text/event-stream")
-                        .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-                        .build();
-
-        HttpResponse<InputStream> resp;
-        try {
-            resp = upstreamChatHttpClient.send(httpReq, HttpResponse.BodyHandlers.ofInputStream());
-        } catch (IOException e) {
-            log.warn("模型流式连接失败 model={}", apiModelCode, e);
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, UserFacingMessages.NETWORK_TRY_LATER);
-        } catch (InterruptedException e) {
-            throw new StreamSendInterrupted(e);
+        if (!t.startsWith("data:")) {
+            return;
         }
-
-        if (resp.statusCode() != 200) {
-            try (InputStream errStream = resp.body()) {
-                String errBody = new String(errStream.readAllBytes(), StandardCharsets.UTF_8);
-                log.warn("模型流式请求失败 model={} status={} body={}", apiModelCode, resp.statusCode(), errBody);
-            } catch (IOException e) {
-                log.warn("读取模型错误响应失败", e);
-            }
-            throw upstreamChatFailure(resp.statusCode());
+        String data = t.substring(5).strip();
+        if ("[DONE]".equals(data)) {
+            return;
         }
-
-        StringBuilder full = new StringBuilder();
-        try (BufferedReader reader =
-                new BufferedReader(
-                        new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isEmpty()) {
-                    continue;
-                }
-                if (!line.startsWith("data:")) {
-                    continue;
-                }
-                String data = line.substring(5).trim();
-                if ("[DONE]".equals(data)) {
-                    break;
-                }
-                JsonNode root;
-                try {
-                    root = objectMapper.readTree(data);
-                } catch (Exception e) {
-                    log.trace("跳过无法解析的 SSE 段: {}", line);
-                    continue;
-                }
-                JsonNode choices = root.path("choices");
-                if (!choices.isArray() || choices.isEmpty()) {
-                    continue;
-                }
-                JsonNode firstChoice = choices.get(0);
-                String piece = streamingDeltaText(firstChoice.path("delta"));
-                if (piece.isEmpty()) {
-                    piece = streamingDeltaText(firstChoice.path("message"));
-                }
-                if (!piece.isEmpty()) {
-                    full.append(piece);
-                    anyDeltaSent.set(true);
-                    onDelta.accept(piece);
-                }
-            }
-        } catch (IOException e) {
-            if (isInterruptedOrCancelDuringStreamRead(e)) {
-                log.debug(
-                        "流式读取因中断结束（多为客户端取消或连接断开），已输出字符数={}",
-                        full.length());
-                return full.toString();
-            }
-            log.warn("读取模型流中断 model={}", apiModelCode, e);
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, UserFacingMessages.NETWORK_TRY_LATER);
+        String piece = SseOpenAiDeltaParser.extractStreamText(data);
+        if (!piece.isEmpty()) {
+            emitter.send(SseClientJsonEscapes.sseDeltaEvent(piece));
+            onDeltaPiece.accept(piece);
         }
-        return full.toString();
+    }
+
+    private static String truncateForLog(String s, int max) {
+        if (s == null || s.isEmpty()) {
+            return "";
+        }
+        return s.length() <= max ? s : s.substring(0, max) + "…";
     }
 
     /** 429/502/503/504 等可尝试换模型降级；其它状态立即返回给调用方 */
@@ -611,18 +616,6 @@ public class ChatService {
                     HttpStatus.TOO_MANY_REQUESTS, UserFacingMessages.UPSTREAM_MODEL_UNAVAILABLE);
         }
         return new ResponseStatusException(HttpStatus.BAD_GATEWAY, UserFacingMessages.NETWORK_TRY_LATER);
-    }
-
-    /**
-     * 判断读取 SSE 时的 IOException 是否由线程中断引起（通常表示用户中止或浏览器断开，而非上游质量问题）。
-     */
-    private static boolean isInterruptedOrCancelDuringStreamRead(IOException e) {
-        for (Throwable t = e; t != null; t = t.getCause()) {
-            if (t instanceof InterruptedException) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -813,7 +806,7 @@ public class ChatService {
     }
 
     /**
-     * @param allowVision 已登录用户传 {@code true} 时与 {@link #streamChat} 一致：含图则内联多模态，不再先识图摘要
+     * @param allowVision 已登录用户传 {@code true} 时与 {@link #prepareStreamChat} 一致：含图则内联多模态，不再先识图摘要
      * @param username 登录用户名；访客传 {@code null}
      */
     public ChatResponse chat(ChatRequest request, boolean allowVision, String username) {

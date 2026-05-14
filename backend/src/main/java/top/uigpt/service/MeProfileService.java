@@ -10,7 +10,6 @@ import top.uigpt.dto.UserStatsResponse;
 import top.uigpt.entity.ChatConversation;
 import top.uigpt.entity.ChatConversationImage;
 import top.uigpt.entity.User;
-import top.uigpt.service.ConversationImageService;
 import top.uigpt.repository.ChatConversationImageRepository;
 import top.uigpt.repository.ChatConversationRepository;
 import top.uigpt.repository.UserRepository;
@@ -68,11 +67,14 @@ public class MeProfileService {
                         ? null
                         : skillIdFilter.strip().toLowerCase(Locale.ROOT);
         var pg =
-                skill != null
-                        ? imageRepository.findByUserIdAndSkillIdOrderByCreatedAtDesc(
-                                user.getId(), skill, PageRequest.of(p, sz))
-                        : imageRepository.findImagesForUserPage(
-                                user.getId(), PageRequest.of(p, sz));
+                "studio".equals(skill)
+                        ? imageRepository.findImageStudioWorksForUser(
+                                user.getId(), PageRequest.of(p, sz))
+                        : skill != null
+                                ? imageRepository.findByUserIdAndSkillIdOrderByCreatedAtDesc(
+                                        user.getId(), skill, PageRequest.of(p, sz))
+                                : imageRepository.findImagesForUserPage(
+                                        user.getId(), PageRequest.of(p, sz));
         return mapRows(pg.getContent());
     }
 
@@ -98,10 +100,13 @@ public class MeProfileService {
                             String title;
                             if (c != null && c.getTitle() != null && !c.getTitle().isBlank()) {
                                 title = c.getTitle();
-                            } else if (ConversationImageService.IMAGE_STUDIO_SKILL_ID.equals(
+                            } else if (ConversationImageService.isImageStudioWorkbenchGallerySkill(
                                     i.getSkillId())) {
-                                title = "图片创作";
-                            } else if ("video-studio".equals(i.getSkillId())) {
+                                title =
+                                        ConversationImageService.imageStudioSkillLabelZh(i.getSkillId())
+                                                + " · 作品库";
+                            } else if (ConversationImageService.VIDEO_STUDIO_SKILL_ID.equals(
+                                    i.getSkillId())) {
                                 title = "视频创作";
                             } else if (i.getConversationId() == null && i.isFavorite()) {
                                 title = "收藏";

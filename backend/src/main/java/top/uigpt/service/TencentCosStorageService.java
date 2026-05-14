@@ -243,6 +243,33 @@ public class TencentCosStorageService implements ObjectStorageService {
     }
 
     @Override
+    public String putImageStudioSessionObject(
+            long userId, long sessionId, String extension, InputStream in, long size, String contentType) {
+        if (!isReady()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, getUnavailableReason());
+        }
+        String ext = extension == null || extension.isBlank() ? ".png" : extension;
+        if (!ext.startsWith(".")) {
+            ext = "." + ext;
+        }
+        String key = "image-studio-sessions/" + userId + "/" + sessionId + "/" + UUID.randomUUID() + ext;
+        String bucket = appProperties.getCos().getBucket().trim();
+        ObjectMetadata meta = new ObjectMetadata();
+        meta.setContentLength(size);
+        meta.setContentType(
+                contentType != null && !contentType.isBlank()
+                        ? contentType
+                        : "application/octet-stream");
+        try {
+            cosClient.putObject(new PutObjectRequest(bucket, key, in, meta));
+            return key;
+        } catch (Exception e) {
+            log.warn("上传 COS 失败 bucket={} key={}", bucket, key, e);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "图片上传失败，请检查腾讯云 COS 配置与权限");
+        }
+    }
+
+    @Override
     public String putStudioObject(
             long userId, String extension, InputStream in, long size, String contentType) {
         if (!isReady()) {

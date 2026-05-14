@@ -36,6 +36,9 @@ public class AppProperties {
      */
     private Rag rag = new Rag();
 
+    /** 图片工作台 Nano Banana：多路并行、Judge、Prompt 多样化等编排参数 */
+    private ImageStudio imageStudio = new ImageStudio();
+
     /** 知识库文件导入：复杂句 LLM 改写等 */
     private KnowledgeImport knowledgeImport = new KnowledgeImport();
 
@@ -251,6 +254,24 @@ public class AppProperties {
         private int maxQueryChars = 8000;
         /** 访问 Qdrant 与 embedding 的 HTTP 读超时（秒） */
         private int readTimeoutSeconds = 45;
+    }
+
+    @Data
+    public static class ImageStudio {
+        /**
+         * 文生图/编辑「多路」接口的并行候选上限（亦 clamp 客户端 {@code candidateCount}）。最小为 2。
+         */
+        private int pairMaxCandidates = 4;
+
+        /**
+         * 是否为多路结果计算 {@code recommendedSlot}（启发式 PNG 校验等）；关闭时字段为 null，与历史行为一致。
+         */
+        private boolean pairJudgeEnabled = false;
+
+        /**
+         * 多路并行时是否为第 2 路及以后追加轻微不同的英文 variation 指令（同一意图与 RAG 前提下）。
+         */
+        private boolean multiCandidateDiversifyPrompt = false;
     }
 
     @Data

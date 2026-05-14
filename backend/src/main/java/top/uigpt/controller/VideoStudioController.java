@@ -129,7 +129,8 @@ public class VideoStudioController {
                 null,
                 row.getId(),
                 objectStorageService.browserReadableUrl(row.getObjectKey()),
-                row.isFavorite());
+                row.isFavorite(),
+                false);
     }
 
     private String requireUser(String authorization) {

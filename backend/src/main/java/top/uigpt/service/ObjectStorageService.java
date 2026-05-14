@@ -26,6 +26,12 @@ public interface ObjectStorageService {
     /** 图片创作工作台生成图：{@code studio/{userId}/{uuid}.ext} */
     String putStudioObject(long userId, String extension, InputStream in, long size, String contentType);
 
+    /**
+     * 图片工作台「图片会话」生成图：{@code image-studio-sessions/{userId}/{sessionId}/{uuid}.ext}（与对话归档会话隔离）。
+     */
+    String putImageStudioSessionObject(
+            long userId, long sessionId, String extension, InputStream in, long size, String contentType);
+
     /** 站内信附件：{@code site-mail/{threadId}/{uuid}.ext} */
     String putSiteMailObject(long threadId, String extension, InputStream in, long size, String contentType);
 

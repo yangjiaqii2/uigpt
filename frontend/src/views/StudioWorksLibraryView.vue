@@ -175,6 +175,7 @@ onUnmounted(() => {
             @load="loaded[it.id] = true"
           />
         </button>
+        <p v-if="it.conversationTitle" class="swl-cap">{{ it.conversationTitle }}</p>
         <div class="swl-actions">
           <button type="button" class="swl-act" @click="openPreview(it.imageUrl)">预览</button>
           <button type="button" class="swl-act swl-act--danger" :disabled="delBusy[it.id]" @click="openDeleteConfirm(it, $event)">
@@ -338,6 +339,16 @@ onUnmounted(() => {
   object-fit: cover;
   display: block;
   vertical-align: middle;
+}
+
+.swl-cap {
+  margin: 0;
+  padding: 6px 10px 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--chat-muted-2);
+  line-height: 1.35;
+  text-align: center;
 }
 
 .swl-skel {

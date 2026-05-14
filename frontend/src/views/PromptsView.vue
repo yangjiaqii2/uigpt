@@ -31,6 +31,10 @@ const deleteCancelBtnRef = ref(null)
 const toast = ref('')
 let toastTimer = 0
 
+/** 复制结果：屏幕居中短提示（0.5s） */
+const copyTip = ref('')
+let copyTipTimer = 0
+
 const sortedPrompts = computed(() => {
   const list = [...prompts.value]
   list.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
@@ -44,6 +48,16 @@ function showToast(msg) {
     toast.value = ''
     toastTimer = 0
   }, 2200)
+}
+
+/** 复制专用：居中 tip，默认 500ms 消失 */
+function showCenterCopyTip(msg, durationMs = 500) {
+  copyTip.value = msg
+  if (copyTipTimer) window.clearTimeout(copyTipTimer)
+  copyTipTimer = window.setTimeout(() => {
+    copyTip.value = ''
+    copyTipTimer = 0
+  }, durationMs)
 }
 
 /** @param {unknown} row */
@@ -134,6 +148,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onDeleteDialogKeydown)
+  if (toastTimer) window.clearTimeout(toastTimer)
+  if (copyTipTimer) window.clearTimeout(copyTipTimer)
 })
 
 function openCreate() {
@@ -238,13 +254,13 @@ async function copyTextToClipboard(text) {
 async function copyBody() {
   const text = String(formBody.value ?? '')
   const ok = await copyTextToClipboard(text)
-  showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择复制')
+  showCenterCopyTip(ok ? '复制成功' : '复制失败')
 }
 
 /** @param {string} [text] */
 async function copyPromptBody(text) {
   const ok = await copyTextToClipboard(String(text ?? ''))
-  showToast(ok ? '已复制' : '复制失败，请手动选择复制')
+  showCenterCopyTip(ok ? '复制成功' : '复制失败')
 }
 
 function formatUpdated(iso) {
@@ -332,7 +348,7 @@ function formatUpdated(iso) {
           </div>
           <div class="prm-modal-foot-right">
             <button type="button" class="prm-btn prm-btn--ghost" @click="closeModal">取消</button>
-            <button type="button" class="prm-btn prm-btn--primary" @click="saveForm">保存</button>
+            <button type="button" class="prm-btn prm-btn--primary" @click="saveForm">保存并关闭</button>
           </div>
         </div>
       </div>
@@ -373,6 +389,11 @@ function formatUpdated(iso) {
         </div>
       </Transition>
     </Teleport>
+    <Teleport to="body">
+      <Transition name="prm-copy-flash">
+        <div v-if="copyTip" class="prm-copy-flash" role="status">{{ copyTip }}</div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -410,6 +431,40 @@ function formatUpdated(iso) {
   margin: 0 0 14px;
   font-size: 0.875rem;
   color: var(--accent, #5ee1d5);
+}
+
+/* 复制成功：视口居中短提示（Teleport 到 body，z-index 高于编辑弹窗） */
+.prm-copy-flash {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10120;
+  padding: 10px 20px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #5ee1d5) 42%, transparent);
+  background: color-mix(in srgb, var(--chat-panel, #242424) 88%, var(--accent, #5ee1d5));
+  color: var(--chat-fg-strong, #e8ecf5);
+  font-size: 0.875rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+  pointer-events: none;
+}
+
+.prm-copy-flash-enter-active,
+.prm-copy-flash-leave-active {
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.prm-copy-flash-enter-from,
+.prm-copy-flash-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.94);
 }
 
 .prm-loading {

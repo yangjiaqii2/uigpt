@@ -21,4 +21,9 @@ public class ImageStudioGenerateResponse {
     private String imageUrl;
 
     private boolean favorite;
+
+    /**
+     * 为 true 时 {@link #imageId} 指向 {@code image_studio_session_images}，不得调用「我的作品」收藏接口（仅 chat 图片表）。
+     */
+    private boolean sessionImage;
 }

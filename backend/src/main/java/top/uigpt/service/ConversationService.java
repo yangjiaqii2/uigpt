@@ -150,6 +150,7 @@ public class ConversationService {
                         .findByIdAndUserId(original.getConversationId(), user.getId())
                         .orElse(null);
         if (conv == null
+                || isWorkbenchArchiveConversation(conv)
                 || conv.getSessionMemory() == null
                 || conv.getSessionMemory().isBlank()) {
             return original;
@@ -167,7 +168,7 @@ public class ConversationService {
         ChatMessageDto sys = new ChatMessageDto();
         sys.setRole("system");
         sys.setContent(
-                "【本会话记忆】下列内容由系统根据历史对话整理，请在回复时保持一致；若与下文用户最新说法冲突，以用户最新说法为准。\n\n"
+                "【本会话记忆】下列内容由系统仅根据当前会话内的历史整理，与其它会话无关；请在回复时保持一致；若与下文用户最新说法冲突，以用户最新说法为准。\n\n"
                         + conv.getSessionMemory());
         list.add(sys);
         list.addAll(original.getMessages());
@@ -186,6 +187,9 @@ public class ConversationService {
                     conversationRepository
                             .findByIdAndUserId(conversationId, user.getId())
                             .orElseThrow();
+            if (isWorkbenchArchiveConversation(conv)) {
+                return;
+            }
             String merged =
                     chatService.mergeSessionMemorySummary(
                             conv.getSessionMemory(), lastUserMessage, assistantReply);
@@ -194,6 +198,11 @@ public class ConversationService {
         } catch (Exception e) {
             log.warn("刷新会话记忆失败 conversationId={}", conversationId, e);
         }
+    }
+
+    /** 图片/视频工作台归档会话：不参与聊天侧 session_memory 的注入与刷新，避免与「每会话独立」的图片会话上下文混淆。 */
+    private static boolean isWorkbenchArchiveConversation(ChatConversation conv) {
+        return conv.getStudioChannel() != null && !conv.getStudioChannel().isBlank();
     }
 
     private ChatMessageDto toDto(ChatMessageRow row) {
@@ -222,6 +231,7 @@ public class ConversationService {
             conv = new ChatConversation();
             conv.setUserId(user.getId());
             conv.setTitle(titleFromThread(threadMessages));
+            conv.setSessionMemory(null);
             conv = conversationRepository.save(conv);
         } else {
             conv =

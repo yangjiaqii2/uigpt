@@ -4,22 +4,38 @@
  *
  * 状态：canvasPhase = empty | generating | done | edit-inpaint | edit-outpaint
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import ChatProfileDrawer from '../components/chat/ChatProfileDrawer.vue'
 import SiteMailBell from '../components/site-mail/SiteMailBell.vue'
 import FullscreenImagePreview from '../components/FullscreenImagePreview.vue'
 import { nanoBananaEdit, nanoBananaTextToImage, optimizeImageStudioPrompt } from '../api/imageStudio'
-import { fetchMeImagesPage, patchMyImageFavorite } from '../api/meProfile'
+import {
+  createImageStudioSession,
+  deleteImageStudioSession,
+  fetchImageStudioSessionDetail,
+  fetchImageStudioSessionImageInline,
+  fetchImageStudioSessions,
+  patchImageStudioSession,
+} from '../api/imageStudioSessions'
+import { deleteMyImage, patchMyImageFavorite } from '../api/meProfile'
+import AspectRatioSelector from '../components/image-studio/AspectRatioSelector.vue'
+import StudioSkillSelector from '../components/image-studio/StudioSkillSelector.vue'
+import ImageSessionSidebar from '../components/image-studio/ImageSessionSidebar.vue'
+import QualitySelector from '../components/image-studio/QualitySelector.vue'
+import StyleSelector from '../components/image-studio/StyleSelector.vue'
 import { getAxiosErrorMessage } from '../utils/httpError'
 import {
   nanoBananaPointsForStudioQuality,
   INSUFFICIENT_POINTS_TOOLTIP_ZH,
 } from '../constants/pointCosts'
+import { STUDIO_SKILL_STORAGE_KEY } from '../constants/imageStudioSkills'
+import { useSkillStore } from '../stores/skillStore'
 
 const router = useRouter()
 const auth = useAuthStore()
+const skillStore = useSkillStore()
 
 const STORAGE_PRESETS = 'uigpt_image_gen_presets'
 
@@ -56,7 +72,171 @@ let genInterval = null
 /** @type {AbortController | null} */
 let genAbortController = null
 
-const panelCollapsed = ref(true)
+const dockGlassSelectKey = ref(null)
+provide('dockGlassSelectKey', dockGlassSelectKey)
+
+/** @type {import('vue').Ref<{ id: number, title: string, updatedAt: string, imageCount: number, thumbUrl: string | null }[]>} */
+const imageSessions = ref([])
+const sessionsLoading = ref(false)
+/** 右侧：会话列表 + 当前会话生成记录，默认收起 */
+const studioChatPanelOpen = ref(false)
+/** @type {import('vue').Ref<number | null>} */
+const currentSessionId = ref(null)
+/** @type {import('vue').Ref<{ id: number, url: string, at: number, prompt: string }[]>} */
+const sessionImages = ref([])
+const imageFromSession = ref(false)
+const advancedParamsOpen = ref(false)
+
+/** 图片工作台对话流（与多模态对话页隔离，仅本页 UI） */
+/** @type {import('vue').Ref<{ id: string, role: 'user'|'assistant', text?: string, paramSummary?: string, imageUrl?: string, imageId?: number|null, sessionImage?: boolean, status?: 'loading'|'done'|'error'|'cancelled', progressMsg?: string, progressPct?: number, errorText?: string, createdAt: number }[]>} */
+const studioChatMessages = ref([])
+/** @type {import('vue').Ref<string|null>} */
+const pendingAssistantMsgId = ref(null)
+const mainThreadScrollRef = ref(null)
+/** 用户主动上滚后主线程不强制跟底，生成结束后再贴底 */
+const mainThreadStickToBottom = ref(true)
+
+const STUDIO_PROGRESS_STAGES = [
+  { id: 'intent_parsing', label: '正在理解您的创作意图…' },
+  { id: 'rag_retrieval', label: '正在检索风格知识库…' },
+  { id: 'prompt_optimization', label: '正在优化绘图提示词…' },
+  { id: 'generating', label: 'AI 正在绘制中…' },
+  { id: 'finalizing', label: '最终优化与出图中…' },
+]
+
+function studioMsgUid() {
+  return `ig-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function progressLabelForPct(pct) {
+  const p = Math.min(100, Math.max(0, Number(pct) || 0))
+  const i = Math.min(
+    STUDIO_PROGRESS_STAGES.length - 1,
+    Math.floor((p / 100) * STUDIO_PROGRESS_STAGES.length),
+  )
+  return STUDIO_PROGRESS_STAGES[i].label
+}
+
+function buildParamSummary() {
+  const tool = TOOL_LABEL_ZH[activeTool.value] || activeTool.value
+  const ar = aspects.find((a) => a.id === aspectId.value)?.label || aspectId.value
+  const q = qualitySelectOptions.value.find((o) => o.id === quality.value)?.label || quality.value
+  const sk = skillStore.skillById(studioSkillId.value)?.name || ''
+  return sk ? `${tool} · ${sk} · ${ar} · ${q}` : `${tool} · ${ar} · ${q}`
+}
+
+function scrollMainThreadToBottom(force) {
+  nextTick(() => {
+    const el = mainThreadScrollRef.value
+    if (!el) return
+    if (!force && !mainThreadStickToBottom.value) return
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+function onMainThreadScroll() {
+  const el = mainThreadScrollRef.value
+  if (!el) return
+  const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+  mainThreadStickToBottom.value = gap < 80
+}
+
+function updatePendingAssistantBubble(patch) {
+  const aid = pendingAssistantMsgId.value
+  if (!aid) return
+  studioChatMessages.value = studioChatMessages.value.map((m) =>
+    m.id === aid ? { ...m, ...patch } : m,
+  )
+}
+
+function rebuildStudioChatFromSession() {
+  const msgs = []
+  for (const im of sessionImages.value) {
+    const pt = (im.prompt || '').trim()
+    msgs.push({
+      id: studioMsgUid(),
+      role: 'user',
+      text: pt || '（生成图片）',
+      paramSummary: '历史生成',
+      createdAt: im.at,
+    })
+    msgs.push({
+      id: studioMsgUid(),
+      role: 'assistant',
+      status: 'done',
+      imageUrl: im.url,
+      imageId: im.id,
+      sessionImage: true,
+      createdAt: im.at + 1,
+    })
+  }
+  studioChatMessages.value = msgs
+  pendingAssistantMsgId.value = null
+  void nextTick(() => scrollMainThreadToBottom(true))
+}
+
+function onStudioChatImageClick(url) {
+  const row = sessionImages.value.find((x) => x.url === url)
+  if (row) selectSessionImageThumb(row)
+  else {
+    resultUrl.value = url
+    canvasPhase.value = 'done'
+  }
+}
+
+function findPrevUserPrompt(assistantIdx) {
+  for (let i = assistantIdx - 1; i >= 0; i--) {
+    const row = studioChatMessages.value[i]
+    if (row.role === 'user' && row.text) return String(row.text)
+  }
+  return ''
+}
+
+function onAiCardRetry(m) {
+  const idx = studioChatMessages.value.findIndex((x) => x.id === m.id)
+  if (idx < 0) return
+  const t = findPrevUserPrompt(idx)
+  if (!t) return
+  prompt.value = t
+  void runGeneration()
+}
+
+async function onAiCardDelete(m) {
+  if (m.role !== 'assistant' || m.imageId == null) return
+  if (!window.confirm('确定删除该生成图？')) return
+  try {
+    await deleteMyImage(m.imageId)
+    await reloadCurrentSessionDetail()
+    rebuildStudioChatFromSession()
+    const still = sessionImages.value.some((x) => x.url === resultUrl.value)
+    if (resultUrl.value && !still) {
+      const last = sessionImages.value[sessionImages.value.length - 1]
+      if (last?.url) selectSessionImageThumb(last)
+      else {
+        resultUrl.value = null
+        serverImageId.value = null
+        canvasPhase.value = 'empty'
+      }
+    }
+    statusHint.value = '已删除'
+  } catch (e) {
+    statusHint.value = getAxiosErrorMessage(e)
+  }
+}
+
+function onComposerKeydown(e) {
+  if (e.key !== 'Enter' || e.shiftKey) return
+  if (e.isComposing || e.keyCode === 229) return
+  e.preventDefault()
+  if (canvasPhase.value === 'generating' || promptOptimizing.value) return
+  void runGeneration()
+}
+
+const qualitySelectOptions = computed(() => [
+  { id: 'std', label: '标清', hint: '约 1024px · 快速预览' },
+  { id: 'hd', label: '高清', hint: '约 1536px · 推荐日常' },
+  { id: 'uhd', label: '超清', hint: '约 2048px · 队列可能更久' },
+])
 
 const aspects = [
   { id: '1:1', label: '1:1', w: 1, h: 1 },
@@ -68,13 +248,24 @@ const aspects = [
 ]
 const aspectId = ref('1:1')
 
+/** 作图技能（与后端 studioSkillId 对齐）；选项来自 skillStore.skills */
+const studioSkillId = ref(skillStore.defaultSkillId)
+/** 为 true 时跳过 watch 写 sessionStorage / URL / PATCH，避免载入会话详情时误覆盖 */
+const studioSkillHydratingFromServer = ref(false)
+/** @type {ReturnType<typeof setTimeout> | null} */
+let studioSkillPatchTimer = null
+
 /** Gemini/Banana：风格卡片左侧 12×12 色块（写实肤色、插画明黄、3D 天蓝…） */
 const styleOptions = [
   { id: 'realistic', label: '写实', swatch: '#e8c4b0' },
+  { id: 'anime', label: '动漫', swatch: '#fda4af' },
+  { id: 'cyberpunk', label: '赛博朋克', swatch: '#c084fc' },
+  { id: 'oil', label: '油画', swatch: '#b45309' },
   { id: 'illustration', label: '插画', swatch: '#facc15' },
   { id: '3d', label: '3D 渲染', swatch: '#38bdf8' },
   { id: 'flat', label: '极简扁平', swatch: '#6ee7b7' },
   { id: 'sketch', label: '手绘素描', swatch: '#d4d4d8' },
+  { id: 'floorplan', label: '平面图', swatch: '#1e3a8a' },
   { id: 'cinematic', label: '电影感', swatch: '#3f3f46' },
 ]
 const styleId = ref('realistic')
@@ -155,14 +346,20 @@ const tools = [
   { id: 'style', label: '风格迁移' },
 ]
 
-const presets = ref([])
+/** 切换工具时若有对话流，先经毛玻璃确认再切（见 Teleport #ig-tsw） */
+const toolSwitchConfirmOpen = ref(false)
+/** @type {import('vue').Ref<ToolId | null>} */
+const pendingToolId = ref(null)
+const toolSwitchSubmitting = ref(false)
+const toolSwitchCancelRef = ref(null)
 
-const showBottomPrompt = computed(
-  () =>
-    canvasPhase.value !== 'generating' &&
-    canvasPhase.value !== 'edit-inpaint' &&
-    canvasPhase.value !== 'edit-outpaint',
-)
+const pendingToolSwitchLabel = computed(() => {
+  const id = pendingToolId.value
+  if (!id) return ''
+  return tools.find((t) => t.id === id)?.label || ''
+})
+
+const presets = ref([])
 
 function loadLocalPresets() {
   try {
@@ -192,19 +389,351 @@ function mapStudioRows(data) {
 }
 
 async function refreshStudioLibrary() {
-  if (!auth.isAuthenticated) {
-    historyItems.value = []
-    return
-  }
+  historyItems.value = []
+}
+
+/** @param {{ id: number, imageCount?: number, updatedAt?: string }[]} sessions */
+function pickReusableEmptySession(sessions) {
+  const list = Array.isArray(sessions) ? sessions.filter((s) => s && s.id != null) : []
+  const zeros = list.filter((s) => (Number(s.imageCount) || 0) === 0)
+  if (!zeros.length) return null
+  zeros.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+  return zeros[0]
+}
+
+/** @param {{ id: number, updatedAt?: string }[]} sessions */
+function pickMostRecentSession(sessions) {
+  const list = Array.isArray(sessions) ? sessions.filter((s) => s && s.id != null) : []
+  if (!list.length) return null
+  const sorted = [...list].sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+  return sorted[0]
+}
+
+function tryReadSessionStorageStudioSkill() {
   try {
-    const { data } = await fetchMeImagesPage({ page: 0, size: 48, skill: 'studio' })
-    historyItems.value = mapStudioRows(data)
+    const v = sessionStorage.getItem(STUDIO_SKILL_STORAGE_KEY)
+    return skillStore.isKnownStudioSkillId(v) ? v : null
   } catch {
-    /* 列表失败不阻断作画 */
+    return null
   }
 }
 
+function readQueryStudioSkillId() {
+  const raw = router.currentRoute.value.query?.studioSkill
+  const s = Array.isArray(raw) ? raw[0] : raw
+  return skillStore.isKnownStudioSkillId(s) ? String(s) : null
+}
+
+function onStudioSkillPreferenceChanged(v) {
+  if (studioSkillHydratingFromServer.value) return
+  const id = skillStore.normalizeStudioSkillId(v)
+  try {
+    sessionStorage.setItem(STUDIO_SKILL_STORAGE_KEY, id)
+  } catch {
+    /* ignore */
+  }
+  if (router.currentRoute.value.name === 'image-gen') {
+    void router.replace({ query: { ...router.currentRoute.value.query, studioSkill: id } })
+  }
+  if (!auth.isAuthenticated || currentSessionId.value == null) return
+  if (studioSkillPatchTimer) window.clearTimeout(studioSkillPatchTimer)
+  studioSkillPatchTimer = window.setTimeout(async () => {
+    try {
+      await patchImageStudioSession(currentSessionId.value, { studioSkillId: id })
+      const sid = currentSessionId.value
+      const idx = imageSessions.value.findIndex((x) => x.id === sid)
+      if (idx >= 0) {
+        const row = imageSessions.value[idx]
+        imageSessions.value.splice(idx, 1, { ...row, studioSkillId: id })
+      }
+    } catch {
+      /* ignore */
+    }
+  }, 400)
+}
+
+/** 每次进入图片创作模块：复用无图会话或最近会话，避免重复建空会话；右侧栏默认收起 */
+async function bootstrapFreshImageSessionOnEnter() {
+  studioChatPanelOpen.value = false
+  if (!auth.isAuthenticated) {
+    imageSessions.value = []
+    currentSessionId.value = null
+    sessionImages.value = []
+    newCreationLocal()
+    const gSkill =
+      readQueryStudioSkillId() ?? tryReadSessionStorageStudioSkill() ?? skillStore.defaultSkillId
+    studioSkillHydratingFromServer.value = true
+    studioSkillId.value = skillStore.normalizeStudioSkillId(gSkill)
+    void nextTick(() => {
+      studioSkillHydratingFromServer.value = false
+    })
+    return
+  }
+  await loadSessionsList()
+  const empty = pickReusableEmptySession(imageSessions.value)
+  if (empty) {
+    newCreationLocal()
+    currentSessionId.value = empty.id
+    await loadSessionDetail(empty.id)
+    statusHint.value = '已恢复未使用的会话'
+    void auth.refreshMe()
+    return
+  }
+  const recent = pickMostRecentSession(imageSessions.value)
+  if (recent) {
+    newCreationLocal()
+    currentSessionId.value = recent.id
+    await loadSessionDetail(recent.id)
+    statusHint.value = '已载入最近会话'
+    void auth.refreshMe()
+    return
+  }
+  try {
+    await createNewSessionApi()
+    newCreationLocal()
+    statusHint.value = '已进入新会话'
+  } catch {
+    newCreationLocal()
+    statusHint.value = '无法创建新会话，请检查网络后重试'
+  }
+  void auth.refreshMe()
+}
+
+async function loadSessionsList() {
+  if (!auth.isAuthenticated) {
+    imageSessions.value = []
+    return
+  }
+  sessionsLoading.value = true
+  try {
+    const { data } = await fetchImageStudioSessions({ page: 0, size: 80 })
+    const content = data?.content != null ? data.content : Array.isArray(data) ? data : []
+    imageSessions.value = (Array.isArray(content) ? content : []).map((row) => ({
+      ...row,
+      studioSkillId:
+        row?.studioSkillId != null && String(row.studioSkillId).trim()
+          ? skillStore.normalizeStudioSkillId(String(row.studioSkillId))
+          : skillStore.normalizeStudioSkillId('interior_designer'),
+    }))
+  } catch {
+    imageSessions.value = []
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+async function createNewSessionApi() {
+  const { data } = await createImageStudioSession()
+  const id = data?.id != null ? Number(data.id) : null
+  if (id == null) throw new Error('no session id')
+  await loadSessionsList()
+  currentSessionId.value = id
+  await loadSessionDetail(id)
+  const qSkill = readQueryStudioSkillId()
+  if (qSkill && qSkill !== studioSkillId.value) {
+    studioSkillHydratingFromServer.value = true
+    studioSkillId.value = qSkill
+    try {
+      await patchImageStudioSession(id, { studioSkillId: qSkill })
+    } catch {
+      /* ignore */
+    }
+    void nextTick(() => {
+      studioSkillHydratingFromServer.value = false
+    })
+  }
+  return id
+}
+
+async function loadSessionDetail(id) {
+  const { data } = await fetchImageStudioSessionDetail(id)
+  studioSkillHydratingFromServer.value = true
+  if (data?.studioSkillId != null && String(data.studioSkillId).trim()) {
+    studioSkillId.value = skillStore.normalizeStudioSkillId(data.studioSkillId)
+  } else {
+    /* 旧接口无字段或空：与历史库默认 interior_designer 语义一致，再经 skillStore 归一 */
+    studioSkillId.value = skillStore.normalizeStudioSkillId('interior_designer')
+  }
+  void nextTick(() => {
+    studioSkillHydratingFromServer.value = false
+  })
+  const imgs = Array.isArray(data?.images) ? data.images : []
+  /*
+   * 复用「无图」会话时，服务端 context_text 常为旧会话残留；若载入会随 imageSessionContext
+   * 拼进模型 prompt，导致新指令（如海边日落）被带偏成室内/窗景等。无图会话一律不继承该字段并写回清空。
+   */
+  if (imgs.length === 0) {
+    imageSessionContext.value = ''
+    const stale =
+      typeof data?.contextText === 'string' && data.contextText.trim().length > 0
+    if (stale) {
+      void patchImageStudioSession(id, { contextText: '' }).catch(() => {})
+    }
+  } else {
+    imageSessionContext.value = typeof data?.contextText === 'string' ? data.contextText : ''
+  }
+  sessionImages.value = imgs.map((r) => ({
+    id: r.id != null ? Number(r.id) : 0,
+    url: r.imageUrl,
+    at: r.createdAt ? new Date(r.createdAt).getTime() : Date.now(),
+    prompt: typeof r.userPrompt === 'string' ? r.userPrompt : '',
+  }))
+  const last = sessionImages.value[sessionImages.value.length - 1]
+  if (last?.url) {
+    resultUrl.value = last.url
+    serverImageId.value = last.id
+    resultFavorite.value = false
+    imageFromSession.value = true
+    canvasPhase.value = 'done'
+    genMeta.value = {
+      ...genMeta.value,
+      ago: formatAgo(last.at),
+    }
+  } else {
+    resultUrl.value = null
+    serverImageId.value = null
+    resultFavorite.value = false
+    imageFromSession.value = false
+    canvasPhase.value = 'empty'
+  }
+  rebuildStudioChatFromSession()
+}
+
+async function reloadCurrentSessionDetail() {
+  if (!auth.isAuthenticated || currentSessionId.value == null) return
+  try {
+    await loadSessionDetail(currentSessionId.value)
+  } catch {
+    /* 列表刷新失败不阻断 */
+  }
+}
+
+async function patchSessionContextRemote() {
+  if (!auth.isAuthenticated || currentSessionId.value == null) return
+  try {
+    await patchImageStudioSession(currentSessionId.value, {
+      contextText: imageSessionContext.value,
+      studioSkillId: skillStore.normalizeStudioSkillId(studioSkillId.value),
+    })
+  } catch {
+    /* 静默 */
+  }
+}
+
+async function selectImageSession(id) {
+  if (canvasPhase.value === 'generating') return
+  currentSessionId.value = id
+  await loadSessionDetail(id)
+  statusHint.value = '已切换会话'
+}
+
+/** @returns {Promise<boolean>} 是否已成功准备新会话（失败时不应继续依赖「已清空」状态） */
+async function onNewImageSession(forceNew = false) {
+  if (!auth.isAuthenticated) {
+    newCreationLocal()
+    return true
+  }
+  try {
+    await loadSessionsList()
+    if (!forceNew) {
+      const empty = pickReusableEmptySession(imageSessions.value)
+      if (empty) {
+        newCreationLocal()
+        currentSessionId.value = empty.id
+        await loadSessionDetail(empty.id)
+        statusHint.value = '已切换到未使用的会话'
+        return true
+      }
+    }
+    await createNewSessionApi()
+    newCreationLocal()
+    statusHint.value = '已新建图片会话'
+    return true
+  } catch (e) {
+    statusHint.value = getAxiosErrorMessage(e)
+    return false
+  }
+}
+
+/** 图片会话删除：毛玻璃确认框 */
+const imageSessionDeleteOpen = ref(false)
+/** @type {import('vue').Ref<number|null>} */
+const imageSessionDeleteTargetId = ref(null)
+const imageSessionDeleteSubmitting = ref(false)
+const imageSessionDeleteCancelRef = ref(null)
+
+const imageSessionDeleteTarget = computed(() => {
+  const id = imageSessionDeleteTargetId.value
+  if (id == null) return null
+  return imageSessions.value.find((s) => s.id === id) ?? null
+})
+
+const imageSessionDeleteSummary = computed(() => {
+  const s = imageSessionDeleteTarget.value
+  if (!s) return { title: '', count: 0 }
+  return { title: (s.title || '').trim() || '未命名', count: Number(s.imageCount) || 0 }
+})
+
+function openImageSessionDeleteConfirm(id) {
+  if (!auth.isAuthenticated) return
+  imageSessionDeleteTargetId.value = id
+  imageSessionDeleteOpen.value = true
+}
+
+function cancelImageSessionDeleteConfirm() {
+  if (imageSessionDeleteSubmitting.value) return
+  imageSessionDeleteOpen.value = false
+  imageSessionDeleteTargetId.value = null
+}
+
+watch(imageSessionDeleteOpen, (open) => {
+  if (!open) return
+  nextTick(() => imageSessionDeleteCancelRef.value?.focus?.())
+})
+
+async function confirmImageSessionDelete() {
+  const id = imageSessionDeleteTargetId.value
+  if (!auth.isAuthenticated || id == null || !imageSessionDeleteOpen.value || imageSessionDeleteSubmitting.value) return
+  imageSessionDeleteSubmitting.value = true
+  try {
+    await deleteImageStudioSession(id)
+    await loadSessionsList()
+    if (currentSessionId.value === id) {
+      if (imageSessions.value.length) {
+        await selectImageSession(imageSessions.value[0].id)
+      } else {
+        await createNewSessionApi()
+        newCreationLocal()
+      }
+    }
+    statusHint.value = '已删除会话'
+    imageSessionDeleteOpen.value = false
+    imageSessionDeleteTargetId.value = null
+  } catch (e) {
+    statusHint.value = getAxiosErrorMessage(e)
+  } finally {
+    imageSessionDeleteSubmitting.value = false
+  }
+}
+
+function selectSessionImageThumb(row) {
+  if (!row?.url) return
+  resultUrl.value = row.url
+  serverImageId.value = row.id
+  resultFavorite.value = false
+  imageFromSession.value = true
+  canvasPhase.value = 'done'
+  genMeta.value = { ...genMeta.value, ago: formatAgo(row.at) }
+}
+
+function resolveCarryImageUrl() {
+  if (resultUrl.value) return resultUrl.value
+  const last = sessionImages.value[sessionImages.value.length - 1]
+  return last?.url || ''
+}
+
 async function toggleCanvasFavorite() {
+  if (imageFromSession.value) return
   const id = serverImageId.value
   if (id == null || favBusyId.value === id) return
   favBusyId.value = id
@@ -251,7 +780,9 @@ function onDocClick(e) {
     e.target.closest?.('.pp-modal-shell') ||
     e.target.closest?.('.ig-profile-wrap') ||
     e.target.closest?.('.site-mail-wrap') ||
-    e.target.closest?.('.sm-shell')
+    e.target.closest?.('.sm-shell') ||
+    e.target.closest?.('.ig-sdel-shell') ||
+    e.target.closest?.('.ig-tsw-shell')
   ) {
     return
   }
@@ -265,10 +796,18 @@ function onDocKeydown(e) {
     fullscreenPreviewOpen.value = false
     return
   }
+  if (toolSwitchConfirmOpen.value) {
+    cancelToolSwitchConfirm()
+    return
+  }
+  if (imageSessionDeleteOpen.value) {
+    cancelImageSessionDeleteConfirm()
+    return
+  }
   if (profileOpen.value) profileOpen.value = false
 }
 
-function selectTool(id) {
+async function applyToolSelection(id) {
   activeTool.value = id
   if (id === 'inpaint' || id === 'outpaint') {
     if (!resultUrl.value || canvasPhase.value === 'empty') {
@@ -284,6 +823,41 @@ function selectTool(id) {
     canvasPhase.value = resultUrl.value ? 'done' : 'empty'
   }
   statusHint.value = `已切换：${tools.find((t) => t.id === id)?.label || ''}`
+}
+
+async function selectTool(id) {
+  if (id !== activeTool.value && studioChatMessages.value.length > 0) {
+    pendingToolId.value = id
+    toolSwitchConfirmOpen.value = true
+    return
+  }
+  await applyToolSelection(id)
+}
+
+function cancelToolSwitchConfirm() {
+  if (toolSwitchSubmitting.value) return
+  toolSwitchConfirmOpen.value = false
+  pendingToolId.value = null
+}
+
+watch(toolSwitchConfirmOpen, (open) => {
+  if (!open) return
+  nextTick(() => toolSwitchCancelRef.value?.focus?.())
+})
+
+async function confirmToolSwitch() {
+  const id = pendingToolId.value
+  if (!id || !toolSwitchConfirmOpen.value || toolSwitchSubmitting.value) return
+  toolSwitchSubmitting.value = true
+  try {
+    const ok = await onNewImageSession(true)
+    if (!ok) return
+    toolSwitchConfirmOpen.value = false
+    pendingToolId.value = null
+    await applyToolSelection(id)
+  } finally {
+    toolSwitchSubmitting.value = false
+  }
 }
 
 function initInpaintCanvas() {
@@ -321,16 +895,24 @@ function clearInpaintMask() {
   initInpaintCanvas()
 }
 
-function newCreation() {
+function newCreationLocal() {
   stopGeneration()
   canvasPhase.value = 'empty'
   resultUrl.value = null
   prompt.value = ''
   serverImageId.value = null
   resultFavorite.value = false
+  imageFromSession.value = false
+  imageSessionContext.value = ''
   revokeRefs()
   referenceImages.value = []
-  statusHint.value = '新建创作'
+  studioChatMessages.value = []
+  pendingAssistantMsgId.value = null
+  statusHint.value = '已清空画布'
+}
+
+function newCreation() {
+  onNewImageSession()
 }
 
 function revokeRefs() {
@@ -427,6 +1009,22 @@ function qualityToImageSize(q) {
   return '1K'
 }
 
+/** 用户描述里像要「图纸/平面」而非透视效果图时，给文生图补一句约束，减少被模型加成室内渲染图 */
+const TECH_DRAWING_HINT_RE =
+  /平面图|平面布置|户型图|图纸|施工图|立面|剖面|\bCAD\b|线稿|二维|正投影|技术图|排版图|建筑图/i
+const EFFECT_RENDER_EXEMPT_RE = /效果图|渲染|透视|三维|3D|写实室内|照片级/i
+
+function appendTechnicalDrawingStyleGuard(base) {
+  const raw = prompt.value.trim()
+  if (!raw || !TECH_DRAWING_HINT_RE.test(raw) || EFFECT_RENDER_EXEMPT_RE.test(raw)) {
+    return base
+  }
+  const guard =
+    '画面类型须与用户描述一致：优先平面/技术示意或线稿风表达，功能区与墙体线条清晰；不要默认改成三维室内透视「效果图」，除非用户明确要求渲染或效果图'
+  const b = (base || '').trim()
+  return b ? `${b}。${guard}` : guard
+}
+
 function buildAugmentedPrompt() {
   let p = prompt.value.trim()
   const styleLabel = styleOptions.find((s) => s.id === styleId.value)?.label || ''
@@ -438,7 +1036,32 @@ function buildAugmentedPrompt() {
     if (tgt) p += `${p ? '，' : ''}目标风格：${tgt}`
   }
   p += `${p ? '，' : ''}创意/还原平衡：${fidelity.value}/10`
+  if (activeTool.value === 'txt2img') {
+    p = appendTechnicalDrawingStyleGuard(p)
+  }
   return p.trim()
+}
+
+/**
+ * 同会话「在上一张基础上继续改」：编辑 API 专用文案。
+ * 不再拼接 aug（风格/创意平衡）+「整体修改」，否则容易整体重画、改偏用户指令（如只改窗）。
+ */
+function buildCarryEditApiPrompt(userInstruction) {
+  const core = (userInstruction || '').trim() || '按参考图微调'
+  const fid = Number(fidelity.value)
+  const leanKeep =
+    Number.isFinite(fid) && fid >= 7
+      ? `本次修改优先少动未提及区域（创意/还原约 ${fid}/10）。`
+      : ''
+  return [
+    `【用户修改指令】${core}`,
+    leanKeep,
+    '以上一张成图为唯一基准：只落实指令中的改动；未写明的墙体、家具、标注、比例、线型与画面类别（平面图/立面/透视等）须与参考图一致。',
+    '不要整体重画、不要擅自替换整套户型或把平面图改成未要求的透视效果图。',
+  ]
+    .map((x) => String(x).trim())
+    .filter(Boolean)
+    .join('')
 }
 
 function buildEditPrompt(baseAug) {
@@ -487,13 +1110,43 @@ async function blobUrlToInlinePart(url) {
   return { mimeType, dataBase64 }
 }
 
+/**
+ * 优先通过同域「会话图片 inline」接口取 Base64，避免对 COS/CDN 直链 fetch 触发 CORS（表现为网络异常且未到后端）。
+ * @param {string} url
+ * @returns {Promise<{ mimeType: string, dataBase64: string }>}
+ */
+async function urlToInlinePartForStudioEdit(url) {
+  const sid = currentSessionId.value
+  if (
+    sid != null &&
+    url &&
+    !String(url).startsWith('blob:') &&
+    !String(url).startsWith('data:')
+  ) {
+    let row = sessionImages.value.find((x) => x.url === url)
+    if (!row?.id && resultUrl.value === url && serverImageId.value) {
+      row = { id: serverImageId.value, url }
+    }
+    if (row?.id) {
+      const { data } = await fetchImageStudioSessionImageInline(sid, row.id)
+      const mimeType =
+        typeof data?.mimeType === 'string' && data.mimeType ? data.mimeType : 'image/png'
+      const dataBase64 = typeof data?.dataBase64 === 'string' ? data.dataBase64 : ''
+      if (dataBase64) {
+        return { mimeType, dataBase64 }
+      }
+    }
+  }
+  return blobUrlToInlinePart(url)
+}
+
 async function collectInlineImages() {
   const out = []
   const seen = new Set()
   async function add(u) {
     if (!u || seen.has(u)) return
     seen.add(u)
-    out.push(await blobUrlToInlinePart(u))
+    out.push(await urlToInlinePartForStudioEdit(u))
   }
   if (resultUrl.value) await add(resultUrl.value)
   for (const r of referenceImages.value) await add(r.url)
@@ -517,6 +1170,7 @@ function mapStudioGenerateResponse(data) {
     url,
     serverImageId: data.imageId != null ? Number(data.imageId) : null,
     favorite: Boolean(data.favorite),
+    sessionImage: Boolean(data.sessionImage),
   }
 }
 
@@ -531,17 +1185,47 @@ function applyGenerationSuccess(aspectKey, partialHint) {
     ago: formatAgo(Date.now()),
   }
   void refreshStudioLibrary()
+  if (auth.isAuthenticated && currentSessionId.value != null) {
+    void reloadCurrentSessionDetail()
+    void patchSessionContextRemote()
+  }
   if (auth.isAuthenticated) {
     void auth.refreshMe()
   }
   canvasPhase.value = 'done'
-  statusHint.value = partialHint && String(partialHint).trim() ? String(partialHint).trim() : '生成完成（已保存至作品库）'
+  statusHint.value = partialHint && String(partialHint).trim() ? String(partialHint).trim() : '生成完成'
+}
+
+/** 生成前确保已绑定图片会话，便于落库与作品库归档 */
+async function ensureStudioSessionForGeneration() {
+  if (!auth.isAuthenticated) return false
+  if (currentSessionId.value != null) return true
+  await loadSessionsList()
+  const empty = pickReusableEmptySession(imageSessions.value)
+  if (empty) {
+    await selectImageSession(empty.id)
+    return currentSessionId.value != null
+  }
+  if (imageSessions.value.length) {
+    await selectImageSession(imageSessions.value[0].id)
+    return currentSessionId.value != null
+  }
+  try {
+    await createNewSessionApi()
+    return currentSessionId.value != null
+  } catch {
+    return false
+  }
 }
 
 async function runGeneration() {
   if (canvasPhase.value === 'generating') return
   if (!auth.isAuthenticated) {
     statusHint.value = '请先登录后再生成（服务端持有 API Key）'
+    return
+  }
+  if (!(await ensureStudioSessionForGeneration())) {
+    statusHint.value = '无法创建或选择图片会话，请稍后重试'
     return
   }
   if (auth.points < nanoBananaPointsForStudioQuality(quality.value)) {
@@ -561,18 +1245,63 @@ async function runGeneration() {
   }
 
   canvasPhase.value = 'generating'
+  mainThreadStickToBottom.value = true
+  const firstLabel = STUDIO_PROGRESS_STAGES[0].label
   progressPct.value = 0
-  const steps = ['解析语义中…', '构图生成中…', '细节渲染中…', '最终优化中…']
-  progressMsg.value = steps[0]
-
-  genInterval = window.setInterval(() => {
-    progressPct.value = Math.min(96, progressPct.value + 5 + Math.random() * 8)
-    const stepIdx = Math.min(steps.length - 1, Math.floor(progressPct.value / 28))
-    progressMsg.value = steps[stepIdx]
-  }, 400)
+  progressMsg.value = firstLabel
 
   genAbortController = new AbortController()
   const signal = genAbortController.signal
+
+  function clearGenTicker() {
+    if (genInterval) window.clearInterval(genInterval)
+    genInterval = null
+  }
+
+  function startProgressTicker() {
+    const progressStart = Date.now()
+    genInterval = window.setInterval(() => {
+      const elapsed = Date.now() - progressStart
+      let pct
+      if (elapsed < 3000) {
+        pct = (elapsed / 3000) * 90
+      } else {
+        pct = Math.min(94, 90 + Math.min(1, (elapsed - 3000) / 25000) * 4)
+      }
+      const label = progressLabelForPct(pct)
+      progressPct.value = pct
+      progressMsg.value = label
+      updatePendingAssistantBubble({
+        progressMsg: label,
+        progressPct: pct,
+      })
+    }, 220)
+  }
+
+  function beginStudioChatTurn(userDisplayText) {
+    studioChatMessages.value.push({
+      id: studioMsgUid(),
+      role: 'user',
+      text: userDisplayText,
+      paramSummary: buildParamSummary(),
+      createdAt: Date.now(),
+    })
+    const aid = studioMsgUid()
+    studioChatMessages.value.push({
+      id: aid,
+      role: 'assistant',
+      status: 'loading',
+      progressMsg: firstLabel,
+      progressPct: 0,
+      createdAt: Date.now(),
+    })
+    pendingAssistantMsgId.value = aid
+    progressPct.value = 0
+    progressMsg.value = firstLabel
+    startProgressTicker()
+    void nextTick(() => scrollMainThreadToBottom(true))
+    prompt.value = ''
+  }
 
   try {
     const imageSize = qualityToImageSize(quality.value)
@@ -581,42 +1310,93 @@ async function runGeneration() {
     const ctxOpt = imageSessionContext.value.trim()
       ? { imageSessionContext: imageSessionContext.value }
       : {}
+    const studioSessionPayload = {
+      studioToolId: activeTool.value,
+      studioSkillId: studioSkillId.value,
+      ...(currentSessionId.value != null ? { imageStudioSessionId: currentSessionId.value } : {}),
+    }
 
     let data
     let recordedPrompt = ''
-    if (activeTool.value === 'txt2img') {
+
+    const carryUrl =
+      activeTool.value === 'txt2img' && currentSessionId.value != null ? resolveCarryImageUrl() : ''
+
+    if (activeTool.value === 'txt2img' && carryUrl && p) {
+      beginStudioChatTurn(p)
+      const images = [await urlToInlinePartForStudioEdit(carryUrl)]
+      const promptText = buildCarryEditApiPrompt(p)
+      recordedPrompt = p.trim()
+      const { data: d } = await nanoBananaEdit(
+        {
+          prompt: promptText,
+          userDisplayPrompt: p.trim(),
+          aspectRatio,
+          imageSize,
+          images,
+          ...ctxOpt,
+          ...studioSessionPayload,
+        },
+        { signal },
+      )
+      data = d
+    } else if (activeTool.value === 'txt2img') {
+      beginStudioChatTurn(p)
       const promptText = aug || p
-      recordedPrompt = promptText
+      recordedPrompt = p.trim()
       const { data: d } = await nanoBananaTextToImage(
-        { prompt: promptText, aspectRatio, imageSize, ...ctxOpt },
+        {
+          prompt: promptText,
+          userDisplayPrompt: p.trim(),
+          aspectRatio,
+          imageSize,
+          ...ctxOpt,
+          ...studioSessionPayload,
+        },
         { signal },
       )
       data = d
     } else {
       const images = await collectInlineImages()
       if (images.length === 0) {
-        window.clearInterval(genInterval)
-        genInterval = null
         canvasPhase.value = resultUrl.value ? 'done' : 'empty'
         progressPct.value = 0
         progressMsg.value = ''
         statusHint.value = '没有可用的参考图数据'
         return
       }
+      const userLine = prompt.value.trim() || '（图片编辑）'
+      beginStudioChatTurn(userLine)
       const promptText = buildEditPrompt(aug || p || '按参考图完成编辑')
-      recordedPrompt = promptText
+      recordedPrompt = userLine
       const { data: d } = await nanoBananaEdit(
-        { prompt: promptText, aspectRatio, imageSize, images, ...ctxOpt },
+        {
+          prompt: promptText,
+          userDisplayPrompt: userLine,
+          aspectRatio,
+          imageSize,
+          images,
+          ...ctxOpt,
+          ...studioSessionPayload,
+        },
         { signal },
       )
       data = d
     }
 
-    window.clearInterval(genInterval)
-    genInterval = null
+    clearGenTicker()
 
     const row = mapStudioGenerateResponse(data)
     if (!row.ok) {
+      const aidFail = pendingAssistantMsgId.value
+      if (aidFail) {
+        studioChatMessages.value = studioChatMessages.value.map((m) =>
+          m.id === aidFail
+            ? { ...m, status: 'error', errorText: row.error || '生成失败', progressPct: 0 }
+            : m,
+        )
+      }
+      pendingAssistantMsgId.value = null
       canvasPhase.value = resultUrl.value ? 'done' : 'empty'
       progressPct.value = 0
       progressMsg.value = ''
@@ -624,21 +1404,52 @@ async function runGeneration() {
       return
     }
 
+    const aidOk = pendingAssistantMsgId.value
+    if (aidOk) {
+      studioChatMessages.value = studioChatMessages.value.map((m) =>
+        m.id === aidOk
+          ? {
+              ...m,
+              status: 'done',
+              imageUrl: row.url,
+              imageId: row.serverImageId != null ? Number(row.serverImageId) : null,
+              sessionImage: Boolean(row.sessionImage),
+              progressPct: 100,
+              progressMsg: '完成',
+            }
+          : m,
+      )
+    }
+    pendingAssistantMsgId.value = null
+    mainThreadStickToBottom.value = true
+
     resultUrl.value = row.url
     serverImageId.value = row.serverImageId != null ? Number(row.serverImageId) : null
     resultFavorite.value = Boolean(row.favorite)
-    applyGenerationSuccess(aspectId.value, null)
+    imageFromSession.value = Boolean(row.sessionImage)
     appendStudioImageContext(TOOL_LABEL_ZH[activeTool.value] || activeTool.value, recordedPrompt)
+    applyGenerationSuccess(aspectId.value, null)
+    void nextTick(() => scrollMainThreadToBottom(true))
   } catch (e) {
-    window.clearInterval(genInterval)
-    genInterval = null
+    clearGenTicker()
     const canceled =
       e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError' || e?.name === 'AbortError'
-    if (canceled) {
-      statusHint.value = '已停止生成'
-    } else {
-      statusHint.value = getAxiosErrorMessage(e)
+    const errText = canceled ? '已取消' : getAxiosErrorMessage(e)
+    statusHint.value = errText
+    const aidErr = pendingAssistantMsgId.value
+    if (aidErr) {
+      studioChatMessages.value = studioChatMessages.value.map((m) =>
+        m.id === aidErr
+          ? {
+              ...m,
+              status: canceled ? 'cancelled' : 'error',
+              errorText: errText,
+              progressPct: 0,
+            }
+          : m,
+      )
     }
+    pendingAssistantMsgId.value = null
     if (canvasPhase.value === 'generating') {
       canvasPhase.value = resultUrl.value ? 'done' : 'empty'
     }
@@ -662,6 +1473,15 @@ function stopGeneration() {
   genAbortController = null
   if (genInterval) window.clearInterval(genInterval)
   genInterval = null
+  const aid = pendingAssistantMsgId.value
+  if (aid) {
+    studioChatMessages.value = studioChatMessages.value.map((m) =>
+      m.id === aid
+        ? { ...m, status: 'cancelled', errorText: '已取消', progressPct: 0, progressMsg: '' }
+        : m,
+    )
+    pendingAssistantMsgId.value = null
+  }
   if (canvasPhase.value === 'generating') {
     canvasPhase.value = resultUrl.value ? 'done' : 'empty'
     progressPct.value = 0
@@ -698,6 +1518,7 @@ function rangeBubbleLeftPct(value, min, max) {
 
 function restoreDefaults() {
   aspectId.value = '1:1'
+  studioSkillId.value = skillStore.defaultSkillId
   styleId.value = 'realistic'
   styleTargetId.value = 'illustration'
   fidelity.value = 7
@@ -716,6 +1537,17 @@ function restoreDefaults() {
 
 watch(enhanceRes, (v) => {
   if (v === '8k') enhanceRes.value = '4k'
+})
+
+watch(
+  () => skillStore.skills.map((s) => s.id).join(','),
+  () => {
+    studioSkillId.value = skillStore.normalizeStudioSkillId(studioSkillId.value)
+  },
+)
+
+watch(studioSkillId, (v) => {
+  onStudioSkillPreferenceChanged(v)
 })
 
 function savePreset() {
@@ -761,13 +1593,28 @@ function downloadUrl(url, name = 'uigpt-image.jpg') {
   a.click()
 }
 
-watch(panelCollapsed, () => nextTick(() => initInpaintCanvas()))
+watch(advancedParamsOpen, () => nextTick(() => initInpaintCanvas()))
+
+watch(
+  studioChatMessages,
+  () => void nextTick(() => scrollMainThreadToBottom(false)),
+  { deep: true },
+)
 
 watch(
   () => auth.isAuthenticated,
-  (ok) => {
-    if (ok) void refreshStudioLibrary()
-    else historyItems.value = []
+  async (ok) => {
+    if (ok) {
+      await bootstrapFreshImageSessionOnEnter()
+    } else {
+      historyItems.value = []
+      imageSessions.value = []
+      currentSessionId.value = null
+      sessionImages.value = []
+      imageFromSession.value = false
+      studioChatPanelOpen.value = false
+      newCreationLocal()
+    }
   },
 )
 
@@ -790,12 +1637,9 @@ function setOutpaintAllDirs() {
   outpaintDirs.value = { t: v, r: v, b: v, l: v }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadLocalPresets()
-  void refreshStudioLibrary()
-  if (auth.isAuthenticated) {
-    void auth.refreshMe()
-  }
+  await bootstrapFreshImageSessionOnEnter()
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onDocKeydown)
   document.addEventListener('pointerup', clearSliderTip)
@@ -804,9 +1648,21 @@ onMounted(() => {
   })
 })
 
+/** 若路由将来对图片页使用 keep-alive，再次显示时需重新 bootstrap（避免沿用缓存会话） */
+let skipFirstKeepAliveActivate = true
+onActivated(async () => {
+  if (skipFirstKeepAliveActivate) {
+    skipFirstKeepAliveActivate = false
+    return
+  }
+  await bootstrapFreshImageSessionOnEnter()
+})
+
 onUnmounted(() => {
   stopGeneration()
   revokeRefs()
+  studioChatPanelOpen.value = false
+  currentSessionId.value = null
   document.removeEventListener('click', onDocClick)
   document.removeEventListener('keydown', onDocKeydown)
   document.removeEventListener('pointerup', clearSliderTip)
@@ -968,187 +1824,160 @@ onUnmounted(() => {
           </div>
         </nav>
 
-        <section class="ig-canvas-wrap">
-          <Transition name="ig-canvas-switch">
-            <div :key="activeTool + '-' + canvasPhase" class="ig-canvas-flow">
-              <!-- 空状态：虚线框 32px 圆角 + 呼吸动画 -->
-              <div v-if="canvasPhase === 'empty'" class="ig-empty">
-                <div class="ig-empty-frame" @dragover.prevent @drop.prevent="onCanvasDrop">
-                  <div class="ig-empty-dash" aria-hidden="true" />
-                  <div class="ig-empty-glow" aria-hidden="true" />
-                  <div class="ig-empty-icon" aria-hidden="true">
-                    <svg class="ig-empty-icon-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1M3 12h3m12 0h3M5.6 18.4l2.1-2.1m8.6-8.6l2.1-2.1"
-                      />
-                      <path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v8M8 12h8" />
-                    </svg>
-                  </div>
-                  <p class="ig-empty-txt">描述你的创意，或拖拽图片到此处</p>
-                  <div class="ig-examples">
-                    <button v-for="ex in examplePrompts" :key="ex" type="button" class="ig-ex-pill" @click="applyExample(ex)">
-                      {{ ex }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 生成中：单路脉冲 + 进度 -->
-              <div v-else-if="canvasPhase === 'generating'" class="ig-gen">
-                <div class="ig-pulse-stack" aria-hidden="true">
-                  <span class="ig-pulse-ring-item" style="animation-delay: 0s" />
-                  <span class="ig-pulse-ring-item" style="animation-delay: 0.35s" />
-                  <span class="ig-pulse-ring-item" style="animation-delay: 0.7s" />
-                </div>
-                <p class="ig-gen-msg">{{ progressMsg }}</p>
-                <div class="ig-progress-micro ig-progress-micro--wide">
-                  <div class="ig-progress-fill" :style="{ width: `${progressPct}%` }" />
-                </div>
-                <button type="button" class="ig-stop" @click="stopGeneration">
-                  <span class="ig-stop-sq" aria-hidden="true" />
-                  停止生成
-                </button>
-              </div>
-
-              <!-- 完成 / 编辑 -->
-              <div
-                v-else
-                class="ig-result"
-                :class="{
-                  'ig-result--edit': canvasPhase === 'edit-inpaint' || canvasPhase === 'edit-outpaint',
-                }"
-              >
-                <div class="ig-img-wrap">
-                  <div class="ig-img-shell" @dragover.prevent @drop.prevent="onCanvasDrop">
-                    <img v-if="resultUrl" :src="resultUrl" alt="生成结果" class="ig-result-img ig-reveal" />
-                    <button
-                      v-if="canvasPhase === 'done' && serverImageId != null"
-                      type="button"
-                      class="ig-result-fav"
-                      :class="{ 'ig-result-fav--on': resultFavorite }"
-                      :disabled="favBusyId === serverImageId"
-                      title="收藏"
-                      aria-label="收藏"
-                      @click.stop="toggleCanvasFavorite"
-                    >
-                      <svg class="ig-result-fav-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linejoin="round"
-                          d="M12 3l2.9 6.28 6.87.69-5.18 4.77 1.43 6.74L12 17.77 5.98 21.48l1.43-6.74L2.23 9.97l6.87-.69L12 3z"
-                        />
-                      </svg>
-                    </button>
-                    <canvas
-                      v-if="canvasPhase === 'edit-inpaint'"
-                      ref="inpaintCanvasRef"
-                      class="ig-inpaint-cv"
-                      @mousedown="drawing = true"
-                      @mouseup="drawing = false"
-                      @mouseleave="drawing = false"
-                      @mousemove="paintInpaint"
-                    />
-                    <div v-if="canvasPhase === 'edit-outpaint'" class="ig-outpaint-ui">
-                      <span class="ig-outpaint-hint">虚线框示意扩展区域 · 参数在右侧面板调整</span>
-                      <div class="ig-outpaint-box" />
-                    </div>
-                    <Transition name="ig-fade">
-                      <div v-if="canvasPhase === 'done' && resultUrl" class="ig-float-tools">
-                        <button type="button" class="ig-ft" title="下载" @click="downloadUrl(resultUrl)">
-                          <svg class="ig-ft-svg" viewBox="0 0 24 24" fill="none">
-                            <path
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              d="M12 3v12m0 0l-4-4m4 4l4-4M5 19h14"
-                            />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          class="ig-ft"
-                          title="预览"
-                          aria-label="预览"
-                          @click="openFullscreenImagePreview(resultUrl)"
-                        >
-                          <svg class="ig-ft-svg" viewBox="0 0 24 24" fill="none">
-                            <path
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"
-                            />
-                            <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          class="ig-ft"
-                          :disabled="studioGenInsufficientPoints"
-                          :title="studioGenInsufficientPoints ? INSUFFICIENT_POINTS_TOOLTIP_ZH : '重新生成'"
-                          aria-label="重新生成"
-                          @click="runGeneration"
-                        >
-                          <svg class="ig-ft-svg" viewBox="0 0 24 24" fill="none">
-                            <path
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              d="M21 12a9 9 0 11-3.26-6.94M21 3v6h-6"
-                            />
-                          </svg>
-                        </button>
-                        <button type="button" class="ig-ft" title="局部重绘" @click="selectTool('inpaint')">
-                          <svg class="ig-ft-svg" viewBox="0 0 24 24" fill="none">
-                            <path
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              d="M12 19l6.5-6.5a2.12 2.12 0 10-3-3L9 16M5 21l4-4"
-                            />
-                          </svg>
-                        </button>
-                        <button type="button" class="ig-ft" title="智能扩图" @click="selectTool('outpaint')">
-                          <svg class="ig-ft-svg" viewBox="0 0 24 24" fill="none">
-                            <path
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              d="M15 3h4a2 2 0 012 2v4M9 21H5a2 2 0 01-2-2v-4m16 0v4a2 2 0 01-2 2h-4M3 15V9a2 2 0 012-2h4"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                    </Transition>
-                  </div>
-                </div>
-                <p v-if="canvasPhase === 'done' && genMeta" class="ig-meta">
-                  {{ genMeta.w }}×{{ genMeta.h }} · {{ genMeta.style }} · {{ genMeta.ago }}
-                </p>
-
-                <div v-if="canvasPhase === 'edit-inpaint'" class="ig-edit-toolbar">
-                  <label class="ig-mini-label">画笔 {{ inpaintBrush }}px</label>
-                  <input v-model.number="inpaintBrush" type="range" min="8" max="72" class="ig-range" />
-                  <button type="button" class="ig-mini-btn" @click="clearInpaintMask">清除涂抹</button>
-                </div>
-              </div>
+        <div
+          ref="mainThreadScrollRef"
+          class="ig-main-thread"
+          @scroll="onMainThreadScroll"
+          @dragover.prevent
+          @drop.prevent="onCanvasDrop"
+        >
+          <div v-if="!studioChatMessages.length" class="ig-thread-empty" @dragover.prevent @drop.prevent="onCanvasDrop">
+            <p class="ig-thread-empty-title">图片创作</p>
+            <p class="ig-thread-empty-desc">在底部输入描述并发送；可拖拽图片到此处作为参考。</p>
+            <div class="ig-examples">
+              <button v-for="ex in examplePrompts" :key="ex" type="button" class="ig-ex-pill" @click="applyExample(ex)">
+                {{ ex }}
+              </button>
             </div>
-          </Transition>
-        </section>
+          </div>
+          <div v-else class="ig-thread-list">
+            <template v-for="m in studioChatMessages" :key="m.id">
+              <div v-if="m.role === 'user'" class="ig-msg-user-row">
+                <article class="ig-msg-user-bubble">
+                  <p class="ig-msg-user-text">{{ m.text }}</p>
+                  <p v-if="m.paramSummary" class="ig-msg-user-meta">{{ m.paramSummary }}</p>
+                </article>
+              </div>
+              <div v-else class="ig-msg-ai-row">
+                <article
+                  class="ig-ai-card"
+                  :class="{
+                    'ig-ai-card--pulse': m.status === 'loading',
+                    'ig-ai-card--err': m.status === 'error' || m.status === 'cancelled',
+                  }"
+                >
+                  <template v-if="m.status === 'loading'">
+                    <div class="ig-ai-card-loading-inner">
+                      <p class="ig-ai-loading-title">正在生成…</p>
+                      <p class="ig-ai-loading-stage">{{ m.progressMsg || '请稍候…' }}</p>
+                      <div class="ig-ai-loading-bar-wrap">
+                        <div class="ig-ai-loading-bar">
+                          <div class="ig-ai-loading-fill" :style="{ width: `${Math.round(m.progressPct || 0)}%` }" />
+                        </div>
+                        <span class="ig-ai-loading-pct">{{ Math.round(m.progressPct || 0) }}%</span>
+                      </div>
+                      <button type="button" class="ig-stop ig-stop--card" @click.stop="stopGeneration">
+                        <span class="ig-stop-sq" aria-hidden="true" />
+                        停止生成
+                      </button>
+                    </div>
+                  </template>
+                  <template v-else-if="m.status === 'done' && m.imageUrl">
+                    <button
+                      type="button"
+                      class="ig-ai-card-img-btn"
+                      :title="'查看大图'"
+                      @click="openFullscreenImagePreview(m.imageUrl)"
+                    >
+                      <img :src="m.imageUrl" alt="生成结果" class="ig-ai-card-img" />
+                    </button>
+                    <div class="ig-ai-card-actions">
+                      <button type="button" class="ig-ai-act" @click="downloadUrl(m.imageUrl)">下载</button>
+                      <button type="button" class="ig-ai-act" @click="openFullscreenImagePreview(m.imageUrl)">放大</button>
+                      <button
+                        v-if="m.imageId != null"
+                        type="button"
+                        class="ig-ai-act ig-ai-act--danger"
+                        @click="onAiCardDelete(m)"
+                      >
+                        删除
+                      </button>
+                      <button
+                        v-if="m.imageId != null && resultUrl === m.imageUrl && serverImageId != null && !imageFromSession"
+                        type="button"
+                        class="ig-ai-act"
+                        :class="{ 'ig-ai-act--on': resultFavorite }"
+                        :disabled="favBusyId === serverImageId"
+                        @click.stop="toggleCanvasFavorite"
+                      >
+                        收藏
+                      </button>
+                    </div>
+                  </template>
+                  <template v-else-if="m.status === 'error' || m.status === 'cancelled'">
+                    <p class="ig-ai-err-text">
+                      {{ m.status === 'cancelled' ? '已取消' : '生成失败' }}：{{ m.errorText || '未知错误' }}
+                    </p>
+                    <button
+                      v-if="m.status === 'error'"
+                      type="button"
+                      class="ig-ai-retry"
+                      @click="onAiCardRetry(m)"
+                    >
+                      重试
+                    </button>
+                  </template>
+                </article>
+              </div>
+            </template>
+          </div>
         </div>
 
-        <template v-if="showBottomPrompt">
-          <div class="ig-compose-split" aria-hidden="true" />
-          <footer class="ig-dock">
+        <div
+          v-if="canvasPhase === 'edit-inpaint' || canvasPhase === 'edit-outpaint'"
+          class="ig-edit-sheet"
+          @dragover.prevent
+          @drop.prevent="onCanvasDrop"
+        >
+          <div class="ig-edit-sheet-inner">
+            <div class="ig-edit-sheet-imgwrap">
+              <img v-if="resultUrl" :src="resultUrl" alt="" class="ig-edit-sheet-img" />
+              <canvas
+                v-if="canvasPhase === 'edit-inpaint'"
+                ref="inpaintCanvasRef"
+                class="ig-inpaint-cv ig-inpaint-cv--sheet"
+                @mousedown="drawing = true"
+                @mouseup="drawing = false"
+                @mouseleave="drawing = false"
+                @mousemove="paintInpaint"
+              />
+              <div v-if="canvasPhase === 'edit-outpaint'" class="ig-outpaint-ui ig-outpaint-ui--sheet">
+                <span class="ig-outpaint-hint">虚线框示意扩展区域 · 方向与比例在「工具」面板调整</span>
+                <div class="ig-outpaint-box" />
+              </div>
+            </div>
+            <div v-if="canvasPhase === 'edit-inpaint'" class="ig-edit-toolbar">
+              <label class="ig-mini-label">画笔 {{ inpaintBrush }}px</label>
+              <input v-model.number="inpaintBrush" type="range" min="8" max="72" class="ig-range" />
+              <button type="button" class="ig-mini-btn" @click="clearInpaintMask">清除涂抹</button>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        <div class="ig-compose-split" aria-hidden="true" />
+        <footer class="ig-dock">
+          <div v-if="canvasPhase === 'edit-inpaint' || canvasPhase === 'edit-outpaint'" class="ig-dock-edit-row">
+            <p class="ig-edit-tip">
+              {{
+                canvasPhase === 'edit-inpaint'
+                  ? '涂抹需要重绘的区域，然后在下方输入修改描述（或使用默认）'
+                  : '确认扩展方向与比例后点击下方确认生成'
+              }}
+            </p>
+            <div class="ig-edit-actions">
+              <button type="button" class="ig-btn-secondary" @click="cancelEdit">取消编辑</button>
+              <button
+                type="button"
+                class="ig-btn-primary"
+                :disabled="studioGenInsufficientPoints"
+                :title="studioGenInsufficientPoints ? INSUFFICIENT_POINTS_TOOLTIP_ZH : undefined"
+                @click="confirmEditGenerate"
+              >
+                确认生成
+              </button>
+            </div>
+          </div>
             <div v-if="referenceImages.length && activeTool === 'img2img'" class="ig-ref-strip">
               <div v-for="(r, i) in referenceImages" :key="i" class="ig-ref-item">
                 <img :src="r.url" alt="" />
@@ -1156,6 +1985,38 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="ig-dock-inner">
+              <div class="ig-dock-selectors">
+                <StudioSkillSelector
+                  v-model="studioSkillId"
+                  :options="skillStore.studioSkillOptions"
+                  :disabled="canvasPhase === 'generating'"
+                />
+                <AspectRatioSelector
+                  v-model="aspectId"
+                  :options="aspects"
+                  :disabled="canvasPhase === 'generating'"
+                />
+                <QualitySelector
+                  v-model="quality"
+                  :options="qualitySelectOptions"
+                  :disabled="canvasPhase === 'generating'"
+                />
+                <StyleSelector
+                  v-model="styleId"
+                  :options="styleOptions"
+                  :disabled="canvasPhase === 'generating'"
+                />
+                <button
+                  type="button"
+                  class="ig-dock-adv-btn"
+                  :disabled="canvasPhase === 'generating'"
+                  title="工具专属参数、还原度、预设"
+                  aria-label="打开工具参数面板"
+                  @click="advancedParamsOpen = true"
+                >
+                  工具
+                </button>
+              </div>
               <input ref="fileInputRef" type="file" class="ig-hidden-input" accept="image/*" multiple @change="onFilesSelected" />
               <button type="button" class="ig-attach" title="上传参考图" aria-label="上传参考图" @click="triggerImport">
                 <svg class="ig-attach-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -1172,12 +2033,14 @@ onUnmounted(() => {
                 <textarea
                   v-model="prompt"
                   class="ig-textarea ig-textarea--dock"
-                  rows="1"
+                  rows="2"
+                  :disabled="canvasPhase === 'generating'"
                   :placeholder="
                     activeTool === 'img2img'
                       ? '描述你想如何修改这张图片…'
                       : '描述你想要的画面，越详细效果越好…'
                   "
+                  @keydown="onComposerKeydown"
                 />
                 <button
                   type="button"
@@ -1226,107 +2089,24 @@ onUnmounted(() => {
               </button>
             </div>
           </footer>
-        </template>
-
-        <template v-else-if="canvasPhase === 'edit-inpaint' || canvasPhase === 'edit-outpaint'">
-          <div class="ig-compose-split" aria-hidden="true" />
-          <footer class="ig-dock ig-dock--edit">
-            <p class="ig-edit-tip">
-              {{
-                canvasPhase === 'edit-inpaint'
-                  ? '涂抹需要重绘的区域，然后在上方输入修改描述（或使用默认）'
-                  : '确认扩展方向与比例后生成新画面'
-              }}
-            </p>
-            <div class="ig-edit-actions">
-              <button type="button" class="ig-btn-secondary" @click="cancelEdit">取消编辑</button>
-              <button
-                type="button"
-                class="ig-btn-primary"
-                :disabled="studioGenInsufficientPoints"
-                :title="studioGenInsufficientPoints ? INSUFFICIENT_POINTS_TOOLTIP_ZH : undefined"
-                @click="confirmEditGenerate"
-              >
-                确认生成
-              </button>
-            </div>
-          </footer>
-        </template>
       </div>
 
-      <!-- 右侧参数：280px / 卡片分组 -->
-      <aside class="ig-panel" :class="{ 'ig-panel--collapsed': panelCollapsed }">
-        <button type="button" class="ig-panel-toggle" @click="panelCollapsed = !panelCollapsed">
-          {{ panelCollapsed ? '◀' : '▶' }}
-        </button>
-        <div v-show="!panelCollapsed" class="ig-panel-scroll ig-panel-scroll--styled">
-          <!-- OUTPUT：比例网格（Banana / Gemini 走 aspectRatio） -->
-          <section class="ig-pgroup">
-            <p class="ig-pgroup-title">OUTPUT</p>
-            <div class="ig-pgroup-card">
-              <div class="ig-aspect-grid">
-                <button
-                  v-for="a in aspects"
-                  :key="a.id"
-                  type="button"
-                  class="ig-aspect-cell"
-                  :class="{ 'ig-aspect-cell--on': aspectId === a.id }"
-                  :title="a.label"
-                  @click="aspectId = a.id"
-                >
-                  <span class="ig-aspect-icon" aria-hidden="true">
-                    <svg v-if="a.id === '1:1'" viewBox="0 0 36 24" class="ig-aspect-svg">
-                      <rect x="10" y="5" width="16" height="16" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    </svg>
-                    <svg v-else-if="a.id === '9:16'" viewBox="0 0 36 24" class="ig-aspect-svg">
-                      <rect x="13" y="2" width="10" height="20" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    </svg>
-                    <svg v-else-if="a.id === '16:9'" viewBox="0 0 36 24" class="ig-aspect-svg">
-                      <rect x="3" y="9" width="30" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    </svg>
-                    <svg v-else-if="a.id === '3:4'" viewBox="0 0 36 24" class="ig-aspect-svg">
-                      <rect x="12" y="3" width="12" height="18" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    </svg>
-                    <svg v-else-if="a.id === '4:3'" viewBox="0 0 36 24" class="ig-aspect-svg">
-                      <rect x="4" y="7" width="28" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    </svg>
-                    <svg v-else viewBox="0 0 36 24" class="ig-aspect-svg">
-                      <rect x="1" y="10" width="34" height="5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    </svg>
-                  </span>
-                  <span class="ig-aspect-lbl">{{ a.label }}</span>
-                </button>
-              </div>
-              <p v-if="aspectId === '21:9'" class="ig-banana-note">
-                超宽比例在 Banana 上渲染较慢，生成时间约为常规的 <strong>2–3 倍</strong>。
-              </p>
+      <Teleport to="body">
+        <div
+          v-if="advancedParamsOpen"
+          class="ig-adv-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="工具与还原参数"
+          @click.self="advancedParamsOpen = false"
+        >
+          <div class="ig-adv-modal ig-panel-scroll--styled" @click.stop>
+            <div class="ig-adv-modal-head">
+              <span class="ig-adv-modal-title">工具参数</span>
+              <button type="button" class="ig-adv-modal-x" @click="advancedParamsOpen = false">✕</button>
             </div>
-          </section>
-
-          <!-- STYLE -->
-          <section class="ig-pgroup">
-            <p class="ig-pgroup-title">STYLE</p>
-            <div class="ig-pgroup-card">
-              <div class="ig-style-scroller">
-                <button
-                  v-for="s in styleOptions"
-                  :key="s.id"
-                  type="button"
-                  class="ig-style-card"
-                  :class="{ 'ig-style-card--on': styleId === s.id }"
-                  @click="styleId = s.id"
-                >
-                  <span class="ig-style-swatch" :style="{ background: s.swatch }" />
-                  <span class="ig-style-name">{{ s.label }}</span>
-                </button>
-              </div>
-              <p class="ig-model-hint ig-model-hint--tight">
-                Gemini：写实与插画表现最佳；3D 渲染建议配合下方「高清」画质。
-              </p>
-            </div>
-          </section>
-
-          <!-- FIDELITY -->
+            <div class="ig-adv-modal-body">
+<!-- FIDELITY -->
           <section class="ig-pgroup">
             <p class="ig-pgroup-title">FIDELITY</p>
             <div class="ig-pgroup-card">
@@ -1349,22 +2129,6 @@ onUnmounted(() => {
               </ul>
             </div>
           </section>
-
-          <!-- QUALITY -->
-          <section class="ig-pgroup">
-            <p class="ig-pgroup-title">QUALITY</p>
-            <div class="ig-pgroup-card">
-              <div class="ig-quality-pills">
-                <button type="button" class="ig-qpill" :class="{ 'ig-qpill--on': quality === 'std' }" @click="quality = 'std'">标准</button>
-                <button type="button" class="ig-qpill" :class="{ 'ig-qpill--on': quality === 'hd' }" @click="quality = 'hd'">高清</button>
-                <button type="button" class="ig-qpill" :class="{ 'ig-qpill--on': quality === 'uhd' }" @click="quality = 'uhd'">超清</button>
-              </div>
-              <p class="ig-quality-res">标准 ≈ 1024px · fastest，适合快速预览</p>
-              <p class="ig-quality-res">高清 ≈ 1536px · balanced，推荐日常</p>
-              <p class="ig-quality-res">超清 ≈ 2048px · 细节优先；Banana 队列可能 <strong>30s+</strong></p>
-            </div>
-          </section>
-
           <!-- TOOL：折叠动画切换专属参数 -->
           <section class="ig-pgroup">
             <p class="ig-pgroup-title">TOOL</p>
@@ -1568,39 +2332,128 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <div class="ig-hist-block">
-            <p class="ig-recent-title">RECENT</p>
-            <div v-if="!historyItems.length" class="ig-recent-empty">
-              <span v-for="n in 4" :key="n" class="ig-recent-ph" />
-              <p class="ig-recent-empty-txt">暂无作品</p>
-            </div>
-            <div v-else class="ig-hist-strip">
-              <button
-                v-for="h in historyItems.slice(0, 12)"
-                :key="h.id"
-                type="button"
-                class="ig-hist-thumb"
-                @click="loadHistoryThumb(h)"
-              >
-                <span class="ig-hist-thumb-wrap">
-                  <img :src="h.url" alt="" />
-                  <span class="ig-hist-dl" role="presentation" @click.stop="downloadUrl(h.url, `recent-${h.id}.png`)">
-                    <svg viewBox="0 0 24 24" fill="none" class="ig-hist-dl-svg" aria-hidden="true">
-                      <path
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M12 3v12m0 0l-4-4m4 4l4-4M5 19h14"
-                      />
-                    </svg>
-                  </span>
-                </span>
-              </button>
-            </div>
+                      </div>
           </div>
         </div>
-      </aside>
+      </Teleport>
+
+      <Teleport to="body">
+        <Transition name="ig-sdel">
+          <div
+            v-if="imageSessionDeleteOpen"
+            class="ig-sdel-shell"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ig-sdel-title"
+            aria-describedby="ig-sdel-desc"
+          >
+            <div class="ig-sdel-backdrop" @click="cancelImageSessionDeleteConfirm" />
+            <div class="ig-sdel-center">
+              <div class="ig-sdel-panel" @click.stop>
+                <h2 id="ig-sdel-title" class="ig-sdel-title">删除图片会话</h2>
+                <p id="ig-sdel-desc" class="ig-sdel-desc">
+                  确定要删除「{{ imageSessionDeleteSummary.title }}」吗？该会话下的
+                  {{ imageSessionDeleteSummary.count }} 张生成记录将一并移除，此操作不可恢复。
+                </p>
+                <div class="ig-sdel-actions">
+                  <button
+                    ref="imageSessionDeleteCancelRef"
+                    type="button"
+                    class="ig-sdel-btn ig-sdel-btn--ghost"
+                    :disabled="imageSessionDeleteSubmitting"
+                    @click="cancelImageSessionDeleteConfirm"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    class="ig-sdel-btn ig-sdel-btn--danger"
+                    :disabled="imageSessionDeleteSubmitting"
+                    @click="confirmImageSessionDelete"
+                  >
+                    {{ imageSessionDeleteSubmitting ? '删除中…' : '确认删除' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Transition>
+      </Teleport>
+
+      <Teleport to="body">
+        <Transition name="ig-tsw">
+          <div
+            v-if="toolSwitchConfirmOpen"
+            id="ig-tsw"
+            class="ig-tsw-shell"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ig-tsw-title"
+            aria-describedby="ig-tsw-desc"
+          >
+            <div class="ig-sdel-backdrop" @click="cancelToolSwitchConfirm" />
+            <div class="ig-sdel-center">
+              <div class="ig-sdel-panel" @click.stop>
+                <p class="ig-tsw-kicker" aria-hidden="true">切换确认</p>
+                <h2 id="ig-tsw-title" class="ig-sdel-title">切换到「{{ pendingToolSwitchLabel }}」</h2>
+                <p id="ig-tsw-desc" class="ig-sdel-desc">
+                  将新建图片会话并清空当前对话流。若未保存的进度仅存在于本页，关闭后将无法找回。
+                </p>
+                <div class="ig-sdel-actions">
+                  <button
+                    ref="toolSwitchCancelRef"
+                    type="button"
+                    class="ig-sdel-btn ig-sdel-btn--ghost"
+                    :disabled="toolSwitchSubmitting"
+                    @click="cancelToolSwitchConfirm"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    class="ig-sdel-btn ig-sdel-btn--accent"
+                    :disabled="toolSwitchSubmitting"
+                    @click="confirmToolSwitch"
+                  >
+                    {{ toolSwitchSubmitting ? '处理中…' : '继续切换' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Transition>
+      </Teleport>
+
+      <div class="ig-chat-shell" :class="{ 'ig-chat-shell--open': studioChatPanelOpen }">
+        <div id="ig-chat-panel" class="ig-chat-panel-track">
+          <aside v-show="studioChatPanelOpen" class="ig-chat-panel-aside" aria-label="图片会话列表">
+            <div class="ig-chat-rail-sessions ig-chat-rail-sessions--only">
+              <ImageSessionSidebar
+                :sessions="imageSessions"
+                :current-id="currentSessionId"
+                :loading="sessionsLoading"
+                :is-authenticated="auth.isAuthenticated"
+                @select="selectImageSession"
+                @new="onNewImageSession"
+                @delete="openImageSessionDeleteConfirm"
+                @session-contextmenu="openImageSessionDeleteConfirm"
+              />
+            </div>
+          </aside>
+        </div>
+        <button
+          type="button"
+          class="ig-chat-edge-btn"
+          :title="studioChatPanelOpen ? '收起会话与记录' : '展开会话与记录'"
+          :aria-expanded="studioChatPanelOpen"
+          aria-controls="ig-chat-panel"
+          @click="studioChatPanelOpen = !studioChatPanelOpen"
+        >
+          <span class="ig-chat-edge-ico" aria-hidden="true">{{ studioChatPanelOpen ? '▶' : '◀' }}</span>
+          <span v-show="!studioChatPanelOpen" class="ig-chat-edge-cap">会话</span>
+        </button>
+      </div>
+
     </div>
 
     <div class="ig-status">{{ statusHint }}</div>
@@ -1747,8 +2600,7 @@ onUnmounted(() => {
   display: none;
 }
 
-/* ---------- 三栏主体（Grid/Flex 布局与尺寸标注） ---------- */
-/* 整块工作区一条渐变：中间列 + 右侧参数 + 底部输入共用，避免色块拼接 */
+/* ---------- 两栏主体：中间画布 + 右侧会话/记录；工作区渐变含底栏输入 ---------- */
 .ig-body {
   position: relative;
   flex: 1;
@@ -1757,6 +2609,140 @@ onUnmounted(() => {
   flex-direction: row;
   overflow: hidden;
   background: var(--ig-workspace-bg);
+}
+
+/* 右侧：会话列表 + 当前会话生成记录（默认收起，边缘按钮展开） */
+.ig-chat-shell {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  min-height: 0;
+  width: 36px;
+  transition: width 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 11;
+}
+
+.ig-chat-shell--open {
+  width: calc(36px + 300px);
+}
+
+.ig-chat-edge-btn {
+  flex-shrink: 0;
+  width: 36px;
+  min-width: 36px;
+  border: none;
+  border-left: 1px solid var(--chat-border);
+  background: color-mix(in srgb, var(--chat-shell-bg) 92%, transparent);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 14px 0 12px;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 750;
+  color: var(--chat-muted);
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.ig-chat-edge-btn:hover {
+  color: var(--chat-fg);
+  background: color-mix(in srgb, var(--chat-btn-bg-hover) 80%, transparent);
+}
+
+.ig-chat-shell--open .ig-chat-edge-btn {
+  color: var(--chat-fg-strong);
+}
+
+.ig-chat-edge-ico {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.ig-chat-edge-cap {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.14em;
+  font-size: 11px;
+  user-select: none;
+}
+
+.ig-chat-panel-track {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    width 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.16s ease;
+}
+
+.ig-chat-shell--open .ig-chat-panel-track {
+  width: 300px;
+  min-width: 300px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ig-chat-panel-aside {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-inline-start: 1px solid var(--chat-border);
+  background: color-mix(in srgb, var(--chat-shell-bg) 88%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.ig-chat-rail-sessions {
+  flex: 0 1 44%;
+  min-height: 0;
+  max-height: min(44vh, 420px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-bottom: 1px solid var(--chat-border);
+}
+
+.ig-chat-rail-sessions :deep(.iss-root) {
+  max-width: none;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border-inline-end: none;
+}
+
+.ig-chat-rail-subhead {
+  flex-shrink: 0;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--chat-border);
+  background: color-mix(in srgb, var(--chat-shell-bg) 55%, transparent);
+}
+
+.ig-chat-rail-subtitle {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--chat-muted);
+}
+
+@media (max-width: 900px) {
+  .ig-chat-shell--open {
+    width: calc(36px + 240px);
+  }
+  .ig-chat-shell--open .ig-chat-panel-track {
+    width: 240px;
+    min-width: 240px;
+  }
 }
 
 /* 中央列：画布 + 分隔线 + 输入区同一视觉柱 */
@@ -1786,6 +2772,293 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   background: transparent;
+}
+
+/* —— 主区：对话线程（替代大画布） —— */
+.ig-main-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 16px 20px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--chat-muted) 35%, transparent) transparent;
+}
+
+.ig-thread-empty {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 40px 16px 24px;
+  text-align: center;
+}
+
+.ig-thread-empty-title {
+  margin: 0 0 8px;
+  font-size: 1.125rem;
+  font-weight: 750;
+  color: var(--chat-fg-strong);
+}
+
+.ig-thread-empty-desc {
+  margin: 0 0 20px;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--chat-muted);
+}
+
+.ig-thread-list {
+  max-width: 880px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ig-msg-user-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.ig-msg-user-bubble {
+  max-width: min(92%, 720px);
+  padding: 12px 14px 10px;
+  border-radius: 16px 16px 4px 16px;
+  background: linear-gradient(145deg, #1e293b, #0f172a);
+  color: #f8fafc;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in srgb, var(--chat-border-strong) 55%, transparent);
+}
+
+.ig-msg-user-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ig-msg-user-meta {
+  margin: 8px 0 0;
+  font-size: 0.68rem;
+  color: color-mix(in srgb, #f8fafc 55%, transparent);
+  letter-spacing: 0.02em;
+}
+
+.ig-msg-ai-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 14px;
+}
+
+.ig-ai-card {
+  width: 80%;
+  max-width: 720px;
+  border-radius: 16px;
+  border: 1px solid var(--chat-border);
+  background: color-mix(in srgb, var(--chat-panel) 88%, transparent);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.ig-ai-card--pulse {
+  animation: ig-ai-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ig-ai-pulse {
+  0%,
+  100% {
+    box-shadow: 0 10px 36px rgba(0, 0, 0, 0.28);
+  }
+  50% {
+    box-shadow: 0 12px 44px color-mix(in srgb, var(--ig-brand) 22%, transparent);
+  }
+}
+
+.ig-ai-card--err {
+  border-color: color-mix(in srgb, #f87171 45%, var(--chat-border));
+}
+
+.ig-ai-card-loading-inner {
+  padding: 22px 18px 18px;
+  text-align: center;
+}
+
+.ig-ai-loading-title {
+  margin: 0 0 6px;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--chat-fg-strong);
+}
+
+.ig-ai-loading-stage {
+  margin: 0 0 16px;
+  font-size: 0.78rem;
+  color: var(--chat-muted);
+}
+
+.ig-ai-loading-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.ig-ai-loading-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.ig-ai-loading-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--ig-brand), #34d399);
+  transition: width 0.25s ease;
+}
+
+.ig-ai-loading-pct {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--chat-muted);
+  min-width: 38px;
+  text-align: right;
+}
+
+.ig-stop--card {
+  margin: 0 auto;
+}
+
+.ig-ai-card-img-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: #0a0a0c;
+  cursor: zoom-in;
+}
+
+.ig-ai-card-img {
+  display: block;
+  width: 100%;
+  max-height: min(52vh, 520px);
+  object-fit: contain;
+}
+
+.ig-ai-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--chat-border);
+  background: color-mix(in srgb, var(--chat-shell-bg) 40%, transparent);
+}
+
+.ig-ai-act {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--chat-border-strong);
+  background: transparent;
+  color: var(--chat-fg);
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.ig-ai-act:hover {
+  background: var(--chat-btn-bg-hover);
+}
+
+.ig-ai-act--danger {
+  border-color: color-mix(in srgb, #f87171 55%, transparent);
+  color: #fecaca;
+}
+
+.ig-ai-act--on {
+  border-color: color-mix(in srgb, #fbbf24 55%, transparent);
+  color: #fde68a;
+}
+
+.ig-ai-err-text {
+  margin: 0;
+  padding: 16px 14px 8px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #fecaca;
+}
+
+.ig-ai-retry {
+  margin: 0 12px 14px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--chat-border-strong);
+  background: var(--chat-btn-bg-hover);
+  color: var(--chat-fg-strong);
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.ig-edit-sheet {
+  flex-shrink: 0;
+  max-height: min(44vh, 440px);
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--chat-border);
+  background: color-mix(in srgb, #0a0a0c 92%, transparent);
+}
+
+.ig-edit-sheet-inner {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.ig-edit-sheet-imgwrap {
+  position: relative;
+  width: 100%;
+  min-height: 200px;
+  max-height: min(36vh, 400px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.ig-edit-sheet-img {
+  max-width: 100%;
+  max-height: min(36vh, 400px);
+  object-fit: contain;
+  display: block;
+}
+
+.ig-inpaint-cv--sheet {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  cursor: crosshair;
+}
+
+.ig-outpaint-ui--sheet {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ig-dock-edit-row {
+  flex-shrink: 0;
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid var(--ig-divider-soft);
+  background: color-mix(in srgb, var(--chat-shell-bg) 55%, transparent);
+}
+
+.ig-chat-rail-sessions--only {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
 }
 
 /* —— 画布顶部工具条：背景透明，融入画布 —— */
@@ -3289,9 +4562,420 @@ onUnmounted(() => {
   line-height: 1;
 }
 
+.ig-dock-selectors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ig-dock-adv-btn {
+  height: 38px;
+  min-width: 44px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(26, 26, 30, 0.9);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ig-dock-adv-btn:hover:not(:disabled) {
+  border-color: rgba(94, 225, 213, 0.28);
+  background: rgba(34, 34, 40, 0.92);
+}
+.ig-dock-adv-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ig-sess-grid {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  max-height: 120px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--ig-divider-soft);
+}
+
+.ig-sess-cell {
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.2);
+}
+.ig-sess-cell--on {
+  border-color: rgba(94, 225, 213, 0.55);
+}
+.ig-sess-cell-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ig-studio-chat-scroll--rail {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  border-bottom: none;
+}
+
+.ig-chat-panel-aside .ig-studio-chat-inner {
+  max-width: 100%;
+}
+
+/* —— 图片工作台对话流（气泡） —— */
+.ig-studio-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  max-height: min(42vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(94, 225, 213, 0.22) transparent;
+  border-bottom: 1px solid var(--ig-divider-soft);
+}
+
+.ig-studio-chat-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.ig-studio-chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(94, 225, 213, 0.2);
+  border-radius: 999px;
+}
+
+.ig-studio-chat-inner {
+  max-width: min(920px, 94%);
+  margin: 0 auto;
+  padding: 12px 14px 14px;
+  box-sizing: border-box;
+}
+
+.ig-studio-chat-hint {
+  margin: 0 0 10px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--chat-muted);
+  text-align: center;
+}
+
+.ig-studio-msg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ig-studio-turn {
+  width: 100%;
+}
+
+.ig-studio-user-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+/* 与 ChatView 对话流一致：用户右侧圆角气泡 + 阴影 + 深浅色 */
+.ig-studio-user-bubble {
+  max-width: min(70vw, 560px);
+  padding: 12px 14px;
+  border-radius: 20px 20px 6px 20px;
+  background: linear-gradient(
+    145deg,
+    rgba(94, 225, 213, 0.18) 0%,
+    rgba(140, 160, 230, 0.12) 100%
+  );
+  border: 1px solid rgba(94, 225, 213, 0.22);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme='light'] .ig-studio-user-bubble {
+  background: linear-gradient(
+    145deg,
+    rgba(204, 251, 241, 0.85) 0%,
+    rgba(224, 231, 255, 0.65) 100%
+  );
+  border-color: rgba(13, 148, 136, 0.2);
+}
+
+.ig-studio-user-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(28, 32, 38, 0.92);
+}
+
+html[data-theme='dark'] .ig-studio-user-text,
+html:not([data-theme]) .ig-studio-user-text {
+  color: rgba(235, 238, 245, 0.94);
+}
+
+html[data-theme='light'] .ig-studio-user-text {
+  color: rgba(28, 32, 38, 0.92);
+}
+
+.ig-studio-ai-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: min(96%, 820px);
+}
+
+/* 与 ChatView flow-ai-textcard 一致：毛玻璃卡片 */
+.ig-studio-ai-bubble {
+  border-radius: 16px;
+  border: 1px solid var(--chat-border);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+}
+
+html[data-theme='light'] .ig-studio-ai-bubble:not(.ig-studio-ai-bubble--err) {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.ig-studio-ai-bubble--loading {
+  padding: 12px 14px;
+  min-width: 200px;
+}
+
+.ig-studio-loading-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.ig-studio-ai-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  flex-shrink: 0;
+}
+
+.ig-studio-ai-loading-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--chat-link-accent-fg) 75%, transparent);
+  animation: ig-studio-ai-dot-bounce 0.9s ease-in-out infinite both;
+}
+
+.ig-studio-ai-loading-dot:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.ig-studio-ai-loading-dot:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+@keyframes ig-studio-ai-dot-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  40% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+
+.ig-studio-loading-msg {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--chat-muted-2);
+  letter-spacing: 0.02em;
+}
+
+.ig-studio-loading-bar {
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.ig-studio-ai-bubble--img {
+  padding: 0;
+  border-radius: 16px;
+}
+
+.ig-studio-chat-img-btn {
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.ig-studio-chat-img {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 320px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.ig-studio-ai-bubble--err {
+  padding: 10px 14px;
+  font-size: 0.8125rem;
+  color: var(--chat-danger-fg);
+  background: var(--chat-danger-bg);
+  border-color: color-mix(in srgb, var(--chat-danger-fg) 28%, transparent);
+  backdrop-filter: none;
+}
+
+.ig-studio-ai-err-text {
+  margin: 0;
+}
+
+/* TransitionGroup：与 ChatView flowmsg 同向入场 */
+.ig-studio-msg-move {
+  transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ig-studio-msg-enter-active {
+  transition:
+    opacity 0.45s ease-out,
+    transform 0.55s cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+
+.ig-studio-msg-enter-from[data-role='user'] {
+  opacity: 0;
+  transform: translate(18px, 22px) scale(0.96);
+}
+
+.ig-studio-msg-enter-from[data-role='assistant'] {
+  opacity: 0;
+  transform: translate(-14px, 18px);
+}
+
+@media (max-width: 768px) {
+  .ig-studio-user-bubble {
+    max-width: min(88vw, calc(100% - 8px));
+  }
+
+  .ig-studio-ai-col {
+    max-width: 100%;
+    min-width: 0;
+  }
+}
+
+/* 生成中紧凑区：主进度在对话气泡 */
+.ig-gen-compact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 20px 16px;
+  text-align: center;
+}
+
+.ig-gen-compact-preview {
+  position: relative;
+  max-width: min(100%, 360px);
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--chat-border);
+}
+.ig-gen-compact-preview img {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.25);
+}
+.ig-gen-compact-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.ig-gen-compact-placeholder {
+  font-size: 0.8125rem;
+  color: var(--chat-muted);
+}
+
+.ig-stop--compact {
+  margin-top: 4px;
+}
+
+.ig-adv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 14000;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.ig-adv-modal {
+  width: min(420px, 100%);
+  max-height: min(80vh, 720px);
+  border-radius: 16px;
+  border: 1px solid var(--chat-border);
+  background: var(--chat-shell-bg);
+  color: var(--chat-fg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ig-adv-modal-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--chat-border);
+}
+
+.ig-adv-modal-title {
+  font-size: 0.875rem;
+  font-weight: 750;
+}
+
+.ig-adv-modal-x {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--chat-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.ig-adv-modal-x:hover {
+  background: var(--chat-btn-bg-hover);
+  color: var(--chat-fg);
+}
+
+.ig-adv-modal-body {
+  padding: 10px 12px 16px;
+  overflow-y: auto;
+}
+
 .ig-dock-inner {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 12px;
   max-width: min(920px, 100%);
   margin: 0 auto;
@@ -3350,8 +5034,8 @@ onUnmounted(() => {
   min-width: 0;
   display: flex;
   align-items: stretch;
-  min-height: 48px;
-  max-height: calc(1.5em * 5 + 22px);
+  min-height: 72px;
+  max-height: calc(1.5em * 6 + 28px);
   border-radius: 16px;
   border: 1px solid var(--ig-divider-soft);
   background: var(--ig-card-fill);
@@ -3381,6 +5065,7 @@ onUnmounted(() => {
 .ig-textarea--dock {
   flex: 1;
   min-width: 0;
+  min-height: calc(1.5em * 2 + 8px);
   border: none;
   border-radius: 0;
   background: transparent;
@@ -3553,6 +5238,238 @@ onUnmounted(() => {
 .ig-cross-leave-to {
   opacity: 0;
   transform: translateY(6px);
+}
+
+/* —— 图片会话删除 / 工具切换确认：毛玻璃浮层 —— */
+.ig-sdel-shell,
+.ig-tsw-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 15080;
+  pointer-events: auto;
+}
+
+.ig-sdel-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--chat-backdrop, rgba(0, 0, 0, 0.45)) 88%, #000);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.ig-sdel-center {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(20px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px))
+    max(20px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.ig-sdel-panel {
+  width: min(100%, 380px);
+  pointer-events: auto;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--chat-border-strong) 92%, transparent);
+  background: color-mix(in srgb, var(--chat-panel) 76%, rgba(255, 255, 255, 0.06));
+  -webkit-backdrop-filter: blur(22px);
+  backdrop-filter: blur(22px);
+  box-shadow:
+    var(--chat-panel-shadow, 0 16px 48px rgba(0, 0, 0, 0.45)),
+    inset 0 1px 0 color-mix(in srgb, var(--chat-fg-strong, #fff) 8%, transparent);
+  padding: 22px 22px 18px;
+  box-sizing: border-box;
+}
+
+.ig-sdel-title {
+  margin: 0 0 10px;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--chat-fg-strong);
+  text-align: center;
+}
+
+.ig-sdel-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  color: var(--chat-muted);
+  text-align: center;
+}
+
+.ig-sdel-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.ig-sdel-btn {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 11px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.22s ease,
+    opacity 0.2s ease;
+}
+
+.ig-sdel-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ig-sdel-btn--ghost {
+  border: 1px solid var(--chat-border-strong);
+  background: transparent;
+  color: var(--chat-muted-2);
+}
+
+.ig-sdel-btn--ghost:hover:not(:disabled) {
+  background: var(--chat-btn-bg-hover);
+  color: var(--chat-fg-strong);
+}
+
+.ig-sdel-btn--ghost:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ig-sdel-btn--danger {
+  border: 1px solid color-mix(in srgb, var(--chat-danger-fg, #f87171) 55%, transparent);
+  color: #fff;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--chat-danger-fg, #f87171) 72%, #7f1d1d),
+    color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 12%, #991b1b)
+  );
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--chat-danger-fg, #f87171) 22%, transparent);
+  min-width: 120px;
+}
+
+.ig-sdel-btn--danger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-danger-fg, #f87171) 28%, transparent);
+}
+
+.ig-sdel-btn--danger:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ig-sdel-btn--accent {
+  border: 1px solid color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 45%, transparent);
+  color: var(--chat-fg-strong, #fff);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 38%, #0f766e),
+    color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 12%, #134e4a)
+  );
+  box-shadow:
+    0 8px 28px color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 22%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
+  min-width: 120px;
+}
+
+.ig-sdel-btn--accent:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow:
+    0 12px 36px color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 32%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 18%, transparent);
+}
+
+.ig-sdel-btn--accent:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ig-tsw-kicker {
+  margin: 0 0 6px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: center;
+  color: color-mix(in srgb, var(--chat-link-accent-fg, #5ee1d5) 72%, var(--chat-muted));
+}
+
+.ig-sdel-enter-active,
+.ig-sdel-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.ig-sdel-enter-active .ig-sdel-panel,
+.ig-sdel-leave-active .ig-sdel-panel {
+  transition:
+    transform 0.24s cubic-bezier(0.34, 1.45, 0.64, 1),
+    opacity 0.22s ease;
+}
+
+.ig-sdel-enter-from,
+.ig-sdel-leave-to {
+  opacity: 0;
+}
+
+.ig-sdel-enter-from .ig-sdel-panel,
+.ig-sdel-leave-to .ig-sdel-panel {
+  opacity: 0;
+  transform: scale(0.94);
+}
+
+.ig-sdel-enter-to .ig-sdel-panel,
+.ig-sdel-leave-from .ig-sdel-panel {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.ig-tsw-enter-active,
+.ig-tsw-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.ig-tsw-enter-active .ig-sdel-panel,
+.ig-tsw-leave-active .ig-sdel-panel {
+  transition:
+    transform 0.26s cubic-bezier(0.34, 1.45, 0.64, 1),
+    opacity 0.22s ease;
+}
+
+.ig-tsw-enter-from,
+.ig-tsw-leave-to {
+  opacity: 0;
+}
+
+.ig-tsw-enter-from .ig-sdel-panel,
+.ig-tsw-leave-to .ig-sdel-panel {
+  opacity: 0;
+  transform: scale(0.94) translateY(10px);
+}
+
+.ig-tsw-enter-to .ig-sdel-panel,
+.ig-tsw-leave-from .ig-sdel-panel {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+}
+
+@media (max-width: 480px) {
+  .ig-sdel-actions {
+    flex-direction: column-reverse;
+  }
+
+  .ig-sdel-btn {
+    width: 100%;
+  }
 }
 
 /* 响应式 */
