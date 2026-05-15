@@ -23,5 +23,7 @@ WORKDIR /app
 RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /build/app.jar /app/app.jar
 USER app
+# 与 docker-compose 中 Redis 服务名一致；单独 docker run / K8s 可用 -e REDIS_HOST=… 覆盖；本机 mvn 运行不受此影响
+ENV REDIS_HOST=redis
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
