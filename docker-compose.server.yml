@@ -1,5 +1,6 @@
-# 仅用本 Compose 启动（含 Qdrant + 后端 + 前端）。勿再单独 docker run 占 6333；已有则先 stop/rm。
+# 仅用本 Compose 启动（含 Redis + Qdrant + 后端 + 前端）。勿再单独 docker run 占 6333；已有则先 stop/rm。
 # server.env：cp docker/server.env.example server.env 并填写。
+# Redis：默认加载 docker/redis-default.env（REDIS_HOST=redis）；云 Redis 时在 server.env 写 REDIS_HOST 覆盖。
 # 可选 Qdrant API Key：cp docker/qdrant.env.example docker/qdrant.env 并填写（与 server.env 的 UIGPT_RAG_QDRANT_API_KEY 一致）。
 # docker compose -f docker-compose.server.yml pull && docker compose -f docker-compose.server.yml up -d
 #
@@ -19,6 +20,11 @@
 # 若需 API Key：在 qdrant 服务下增加 environment: QDRANT__SERVICE__API_KEY: ...，并设 UIGPT_RAG_QDRANT_API_KEY。
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: uigpt-redis
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: uigpt-qdrant
@@ -37,8 +43,12 @@ services:
     ports:
       - "8088:8088"
     env_file:
-      - ./server.env
+      - path: docker/redis-default.env
+        required: false
+      - path: ./server.env
+        required: true
     depends_on:
+      - redis
       - qdrant
     extra_hosts:
       - "host.docker.internal:host-gateway"

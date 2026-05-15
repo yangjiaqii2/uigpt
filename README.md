@@ -318,7 +318,7 @@ uigpt/
 - **Java 17+**
 - **Node.js**（建议 20.19+ 或 22.12+，与 Vite 要求一致）
 - **MySQL 8+**
-- **Redis**（注册/登录限流、JWT 黑名单；默认 `localhost:6379`，可用 `REDIS_HOST` / `REDIS_PORT`；仅当 Redis 启用密码时使用 `SPRING_DATA_REDIS_PASSWORD` 或 `spring.data.redis.password`，无密码时不要设空密码以免触发 AUTH）
+- **Redis**（注册/登录限流、JWT 黑名单；默认 `localhost:6379`，可用 `REDIS_HOST` / `REDIS_PORT`；**Docker 容器内**须指向可达主机，如 Compose 中服务名 `redis` 或 `docker/redis-default.env` 默认注入；仅当 Redis 启用密码时使用 `SPRING_DATA_REDIS_PASSWORD` 或 `spring.data.redis.password`，无密码时不要设空密码以免触发 AUTH）
 - 可选：**Qdrant**、**腾讯云 COS**、**APIYi / DashScope** 等密钥（见下）
 
 ### 数据库
@@ -431,12 +431,12 @@ location /api/ {
 - **Could not resolve placeholder**：必填 `DB_*` 或数据源相关未配置。
 - **对话 503**：未配置任一对话 API Key。
 - **图片工作台列不存在 / 表不存在**：新库请重新执行完整 **`docs/schema-mysql.sql`**；旧库执行 **`docs/migrate-incremental-columns.sql`** 或按实体手工 `ALTER`。
-- **前端 401**：JWT 过期或无效。
+- **无法连接 Redis / Redisson 启动失败**：容器内 `localhost:6379` 指向容器自身，不是宿主机。Compose 部署使用本仓库 `docker/docker-compose.server.yml` 时会起 `redis` 并默认 `REDIS_HOST=redis`；单独 `docker run` 或 K8s 须设置 `REDIS_HOST`（及端口、密码）指向真实 Redis 地址。
 
 ---
 
 ## 禁止事项（文档约束）
 
-- 不编造仓库中不存在的中间件（如 **无 Redis**）。
+- 不编造仓库中不存在的中间件或接口。
 - 不粘贴真实 **API Key、数据库密码、JWT Secret**。
 - 图片生成须明确 **Gemini `generateContent`** 链路（经 APIYi）。

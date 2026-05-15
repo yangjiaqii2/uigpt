@@ -1,4 +1,4 @@
-# 服务器上仅用本 Compose 启动（含 Qdrant + 后端 + 前端），勿再单独 docker run -p 6333 起 Qdrant，否则端口冲突。
+# 服务器上仅用本 Compose 启动（含 Redis + Qdrant + 后端 + 前端），勿再单独 docker run -p 6333 起 Qdrant，否则端口冲突。
 # 若本机已有同名或占 6333 的容器：docker stop qdrant uigpt-qdrant 2>/dev/null; docker rm qdrant uigpt-qdrant 2>/dev/null
 #
 # 将 server.env.example 复制为本目录 server.env 并填写；可选 Qdrant API Key：cp qdrant.env.example qdrant.env 后编辑。
@@ -16,7 +16,8 @@
 #
 # 注意：MySQL 须已建库（执行 docs/schema-mysql.sql），且容器能访问 DB（内网 IP / 云数据库地址）。
 #
-# 本文件已包含 Qdrant（服务名 qdrant）；后端在 server.env 中应设 UIGPT_RAG_QDRANT_URL=http://qdrant:6333。
+# 本文件已包含 Qdrant（服务名 qdrant）、Redis（服务名 redis）；后端在 server.env 中应设 UIGPT_RAG_QDRANT_URL=http://qdrant:6333。
+# Redis：默认通过同目录 redis-default.env 注入 REDIS_HOST=redis（勿在容器内用 localhost）。使用云 Redis 时在 server.env 写 REDIS_HOST=你的地址 覆盖。
 # 若需 Qdrant API Key：在 qdrant 服务下增加 environment: QDRANT__SERVICE__API_KEY: ...，并在 server.env 设 UIGPT_RAG_QDRANT_API_KEY 与之相同。
 #
 # 端口说明（勿写反）：
@@ -25,6 +26,11 @@
 # 错误示例：backend 写 "80:8088"、frontend 写 "8080:8080" → 访问域名会打到 Spring，出现 Whitelabel/404。
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: uigpt-redis
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: uigpt-qdrant
@@ -43,8 +49,12 @@ services:
     ports:
       - "8088:8088"
     env_file:
-      - server.env
+      - path: redis-default.env
+        required: false
+      - path: server.env
+        required: true
     depends_on:
+      - redis
       - qdrant
     # MySQL 跑在宿主机时，容器内不要用 127.0.0.1；DB_URL 主机写 host.docker.internal
     extra_hosts:

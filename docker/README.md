@@ -51,6 +51,7 @@ TAG=v1.0.0 ./docker/build-push.sh
 
 - `UIGPT_JWT_SECRET`（UTF-8 至少约 32 字节）
 - `DB_URL` 或 `SPRING_DATASOURCE_*`、`DB_USERNAME`、`DB_PASSWORD`
+- **Redis**：`docker-compose.server.yml` 已包含 `redis` 服务；`docker/redis-default.env` 默认 `REDIS_HOST=redis`（容器内勿用 `localhost`）。使用托管 Redis 时在 `server.env` 写 `REDIS_HOST` / `SPRING_DATA_REDIS_PASSWORD` 等覆盖
 - `DASHSCOPE_API_KEY`（或 `config/runtime-local.properties` 需自行挂载）
 
 ### 前端（Nginx）
