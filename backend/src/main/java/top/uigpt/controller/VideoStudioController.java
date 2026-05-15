@@ -10,7 +10,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
@@ -21,9 +20,9 @@ import top.uigpt.dto.Sora2SubmitRequest;
 import top.uigpt.dto.Sora2SubmitResponse;
 import top.uigpt.dto.VideoStudioFinalizeRequest;
 import top.uigpt.entity.ChatConversationImage;
+import top.uigpt.security.SecurityUtils;
 import top.uigpt.service.ApiYiImageService;
 import top.uigpt.service.ConversationImageService;
-import top.uigpt.service.JwtService;
 import top.uigpt.service.ObjectStorageService;
 
 /**
@@ -34,16 +33,13 @@ import top.uigpt.service.ObjectStorageService;
 @RequiredArgsConstructor
 public class VideoStudioController {
 
-    private final JwtService jwtService;
     private final ApiYiImageService apiYiImageService;
     private final ConversationImageService conversationImageService;
     private final ObjectStorageService objectStorageService;
 
     @PostMapping("/sora2/submit")
-    public Sora2SubmitResponse submitSora2(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @Valid @RequestBody Sora2SubmitRequest body) {
-        requireUser(authorization);
+    public Sora2SubmitResponse submitSora2(@Valid @RequestBody Sora2SubmitRequest body) {
+        requireUser();
         JsonNode created = apiYiImageService.sora2CreateVideoTask(body);
         return new Sora2SubmitResponse(
                 created.path("id").asText(""),
@@ -59,13 +55,12 @@ public class VideoStudioController {
      */
     @PostMapping(value = "/sora2/submit-multipart", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Sora2SubmitResponse submitSora2Multipart(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestPart("prompt") String prompt,
             @RequestPart("model") String model,
             @RequestPart("seconds") String seconds,
             @RequestPart("size") String size,
             @RequestPart("input_reference") MultipartFile inputReference) {
-        requireUser(authorization);
+        requireUser();
         if (inputReference == null || inputReference.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请上传参考图（字段名 input_reference）");
         }
@@ -101,19 +96,16 @@ public class VideoStudioController {
     }
 
     @GetMapping("/sora2/tasks/{videoId}")
-    public JsonNode sora2TaskStatus(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("videoId") String videoId) {
-        requireUser(authorization);
+    public JsonNode sora2TaskStatus(@PathVariable("videoId") String videoId) {
+        requireUser();
         return apiYiImageService.sora2RetrieveVideo(videoId);
     }
 
     @PostMapping("/sora2/tasks/{videoId}/finalize")
     public ImageStudioGenerateResponse sora2Finalize(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable("videoId") String videoId,
             @RequestBody(required = false) VideoStudioFinalizeRequest body) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         JsonNode st = apiYiImageService.sora2RetrieveVideo(videoId);
         String status = st.path("status").asText("");
         if (!"completed".equals(status)) {
@@ -133,8 +125,8 @@ public class VideoStudioController {
                 false);
     }
 
-    private String requireUser(String authorization) {
-        String username = jwtService.parseUsername(authorization);
+    private String requireUser() {
+        String username = SecurityUtils.currentUsernameOrNull();
         if (username == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录");
         }

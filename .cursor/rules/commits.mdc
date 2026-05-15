@@ -1,0 +1,12 @@
+---
+description: Git commit message rules
+globs: []
+alwaysApply: false
+---
+
+When generating commit messages:
+
+- Use Conventional Commits format: type(scope): description
+- Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore
+- Title max 60 characters, present tense, lowercase
+- Add detailed body only when needed

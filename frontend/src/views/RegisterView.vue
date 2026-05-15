@@ -171,7 +171,7 @@ function validateClient() {
     ok = false
   }
   if (!captchaCode.value.trim()) {
-    fieldErrors.captcha = '请输入图形验证码'
+    fieldErrors.captcha = '请填写算式结果（数字）'
     ok = false
   }
   if (!agreeLegal.value) {
@@ -453,9 +453,9 @@ async function onSubmit() {
               <p v-if="fieldErrors.confirmPassword" class="float-hint float-hint--err">{{ fieldErrors.confirmPassword }}</p>
             </div>
 
-            <!-- 验证码：横向 -->
+            <!-- 算式验证码：横向 -->
             <div class="reg-captcha reg-card-enter reg-card-enter--d7">
-              <p class="reg-captcha-title">图形验证码</p>
+              <p class="reg-captcha-title">算式验证码</p>
               <div
                 class="reg-captcha-row"
                 :class="{ 'reg-captcha-row--error': Boolean(fieldErrors.captcha) }"
@@ -467,7 +467,7 @@ async function onSubmit() {
                   :disabled="!captchaImageSrc"
                   @click="refreshCaptcha"
                 >
-                  <img v-if="captchaImageSrc" :src="captchaImageSrc" alt="验证码" class="reg-cap-img" />
+                  <img v-if="captchaImageSrc" :src="captchaImageSrc" alt="加法算式验证码" class="reg-cap-img" />
                   <span v-else class="reg-cap-placeholder">加载中…</span>
                 </button>
 
@@ -480,7 +480,7 @@ async function onSubmit() {
                       'float-field--error': Boolean(fieldErrors.captcha),
                     }"
                   >
-                    <label class="float-label" for="reg-cap">验证码</label>
+                    <label class="float-label" for="reg-cap">计算结果</label>
                     <span class="float-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6">
                         <path d="M12 3 4 7v6c0 5 4 8 8 9 4-1 8-4 8-9V7l-8-4Z" stroke-linejoin="round" />
@@ -492,7 +492,9 @@ async function onSubmit() {
                       v-model="captchaCode"
                       type="text"
                       class="float-input"
-                      maxlength="8"
+                      maxlength="4"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
                       autocomplete="off"
                       autocapitalize="off"
                       spellcheck="false"

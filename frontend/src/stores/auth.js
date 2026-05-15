@@ -79,7 +79,13 @@ export const useAuthStore = defineStore('auth', () => {
     await refreshMe()
   }
 
-  function logout() {
+  async function logout() {
+    try {
+      const { logout: logoutApi } = await import('../api/auth')
+      await logoutApi()
+    } catch {
+      /* 未登录或网络失败时仍清空本地态 */
+    }
     token.value = ''
     username.value = ''
     isAdmin.value = false

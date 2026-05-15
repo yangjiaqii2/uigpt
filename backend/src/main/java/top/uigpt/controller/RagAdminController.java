@@ -10,7 +10,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -26,8 +25,8 @@ import top.uigpt.dto.RagImportTaskStatusResponse;
 import top.uigpt.dto.RagUpsertRequest;
 import top.uigpt.dto.RagUpsertResponse;
 import top.uigpt.multipart.ByteArrayMultipartFile;
+import top.uigpt.security.SecurityUtils;
 import top.uigpt.service.AdminAuthorizationService;
-import top.uigpt.service.JwtService;
 import top.uigpt.service.KnowledgeDocumentService;
 import top.uigpt.service.KnowledgeImportJobService;
 
@@ -40,63 +39,52 @@ import java.util.List;
 @RequiredArgsConstructor
 public class RagAdminController {
 
-    private final JwtService jwtService;
     private final AdminAuthorizationService adminAuthorizationService;
     private final KnowledgeDocumentService knowledgeDocumentService;
     private final KnowledgeImportJobService knowledgeImportJobService;
 
     @GetMapping("/documents")
     public RagDocumentPageResponse listDocuments(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        String username = requireUser(authorization);
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         return knowledgeDocumentService.list(page, size);
     }
 
     @GetMapping("/documents/{pointId}")
-    public RagDocumentDetailResponse getDocument(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("pointId") String pointId) {
-        String username = requireUser(authorization);
+    public RagDocumentDetailResponse getDocument(@PathVariable("pointId") String pointId) {
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         return knowledgeDocumentService.getByPointId(pointId);
     }
 
     @PostMapping("/documents")
-    public RagUpsertResponse createDocument(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @Valid @RequestBody RagDocumentCreateRequest body) {
-        String username = requireUser(authorization);
+    public RagUpsertResponse createDocument(@Valid @RequestBody RagDocumentCreateRequest body) {
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         knowledgeDocumentService.create(body.getTitle(), body.getText());
         return new RagUpsertResponse(1);
     }
 
     @DeleteMapping("/documents/{pointId}")
-    public void deleteDocument(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("pointId") String pointId) {
-        String username = requireUser(authorization);
+    public void deleteDocument(@PathVariable("pointId") String pointId) {
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         knowledgeDocumentService.deleteByPointId(pointId);
     }
 
     @PostMapping("/documents/batch-delete")
     public RagDocumentBatchDeleteResponse batchDeleteDocuments(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody RagDocumentBatchDeleteRequest body) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         return knowledgeDocumentService.deleteByPointIds(body.getPointIds());
     }
 
     @PostMapping(value = "/documents/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<RagImportTaskAcceptedResponse> importDocuments(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(value = "files", required = false) MultipartFile[] files) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         MultipartFile[] arr = files == null ? new MultipartFile[0] : files;
         MultipartFile[] materialized;
@@ -110,10 +98,8 @@ public class RagAdminController {
     }
 
     @GetMapping("/documents/import-tasks/{taskId}")
-    public RagImportTaskStatusResponse getImportTask(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("taskId") String taskId) {
-        String username = requireUser(authorization);
+    public RagImportTaskStatusResponse getImportTask(@PathVariable("taskId") String taskId) {
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         return knowledgeImportJobService.getStatus(taskId);
     }
@@ -151,10 +137,8 @@ public class RagAdminController {
      * 兼容旧接口：多条纯文本各建一条记录并写入 Qdrant。
      */
     @PostMapping("/upsert")
-    public RagUpsertResponse upsert(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @Valid @RequestBody RagUpsertRequest body) {
-        String username = requireUser(authorization);
+    public RagUpsertResponse upsert(@Valid @RequestBody RagUpsertRequest body) {
+        String username = requireUser();
         adminAuthorizationService.requireSuperAdmin(username);
         try {
             int n = knowledgeDocumentService.batchFromPlainTexts(body.getTexts());
@@ -164,8 +148,8 @@ public class RagAdminController {
         }
     }
 
-    private String requireUser(String authorization) {
-        String u = jwtService.parseUsername(authorization);
+    private String requireUser() {
+        String u = SecurityUtils.currentUsernameOrNull();
         if (u == null || u.isBlank()) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或令牌无效");
         }

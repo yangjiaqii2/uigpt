@@ -8,7 +8,7 @@
 
 - 对话：`WebClient` 上游 **SSE**，支持多模态与模型池（`chat_models`）。
 - 图片：服务端 **三阶段 Prompt 编排**（意图 → RAG 块 → 英文 SD 式组词），最终调用 **APIYi 代理的 `gemini-3-pro-image-preview:generateContent`** 出图。
-- 数据：**MySQL 8** 持久化；向量检索 **Qdrant**；对象存储 **COS**（无 Redis 依赖）。
+- 数据：**MySQL 8** 持久化；向量检索 **Qdrant**；对象存储 **COS**；注册/登录限流与 JWT 登出黑名单 **Redis**（默认 `localhost:6379`，见 `spring.data.redis`）。
 
 **适用场景**：企业/团队内部 AI 对话、AI 图像生成、超级管理员维护向量知识库与提示词模板。
 
@@ -52,7 +52,7 @@ graph TD
 | Web | **Spring MVC** + **WebClient**（`spring-boot-starter-webflux` 用于客户端，非 WebFlux 容器） |
 | ORM | **Spring Data JPA**（非 MyBatis） |
 | 数据库 | **MySQL**（`mysql-connector-j`） |
-| 安全 | **自研 JWT**（`jjwt` + `spring-security-crypto`），无 Spring Security FilterChain 全栈鉴权 |
+| 安全 | **Spring Security** FilterChain + **`JwtAuthenticationFilter`**（`jjwt` 验签）；`UserDetailsService` 对接 `users`；BCrypt（`spring-security-crypto`）；登出 **Redis** 黑名单 |
 | 存储 | **腾讯云 COS**（`cos_api`） |
 | 文档解析 | **PDFBox**、**Apache POI**（知识库导入） |
 
@@ -66,7 +66,7 @@ graph TD
 | Embedding | OpenAI 兼容 `/v1/embeddings`（常与 APIYi 同密钥） |
 | 向量库 | **Qdrant** HTTP API |
 
-**未使用**：Redis（注册限流等为进程内内存，多实例需网关或外存）。
+**未使用**：无（注册/登录限流与 JWT 黑名单已用 **Redis**；引入 **Redisson** starter 供后续分布式锁扩展，当前积分路径仍仅用 DB 悲观锁）。
 
 ---
 
@@ -85,7 +85,7 @@ graph TD
 
 **Controller 层（`ChatController`）**
 
-1. 解析 `Authorization` → 用户名（访客为 `null`）；校验访客不得带 `conversationId`。
+1. 从 `SecurityContextHolder` / `SecurityUtils` 取当前用户名（访客为 `null`）；校验访客不得带 `conversationId`。
 2. 若非透传：`ConversationService.injectSessionMemory` 在消息列表**最前**插入一条 `system`（`chat_conversations.session_memory` 摘要；工作台归档会话不注入）。
 3. **注意**：主对话接口**不**调用 `RagService.augment`，即标准聊天**不走 Qdrant 向量注入**（与作图侧 RAG 分离）。
 4. 流式：先 `PointsService` 扣积分 → `ChatService.prepareStreamChat` → `Executor` 中 `forwardStreamToEmitter` → 成功后 `syncAfterChat` + `refreshSessionMemoryAfterTurn`（透传模式下跳过记忆刷新）。
@@ -238,10 +238,10 @@ flowchart LR
 
 ### 4. 用户、鉴权与积分
 
-- **职责**：注册/登录/JWT、个人资料、积分扣减与退还。
-- **关键文件**：`AuthController.java`、`MeController.java`、`JwtService.java`、`PointsService.java`；前端 `stores/auth.js`、`LoginView.vue`。
-- **要点**：BCrypt 密码；JWT Header `Authorization: Bearer`；注册图形验证码与可选 reCAPTCHA v3。
-- **数据流**：登录颁发 JWT → 前端存储 → 后续 API 带 Bearer；扣费在业务方法内 assert/deduct。
+- **职责**：注册/登录/JWT、个人资料、积分扣减与退还；Spring Security 鉴权与登出黑名单。
+- **关键文件**：`SecurityConfig.java`、`JwtAuthenticationFilter.java`、`DbUserDetailsService.java`、`AuthController.java`、`MeController.java`、`JwtService.java`、`PointsService.java`；前端 `stores/auth.js`、`api/auth.js`、`LoginView.vue`。
+- **要点**：BCrypt 密码；JWT Header `Authorization: Bearer`；`POST /api/logout` 将令牌写入 Redis 黑名单后前端再清本地存储；注册页**两整数加法**图片验证码（填数字结果）与可选 reCAPTCHA v3。
+- **数据流**：登录颁发 JWT → 前端存储 → 请求经 Filter 写入 `SecurityContext`；扣费在业务方法内 assert/deduct。
 
 ### 5. 提示词与技能广场（前端）
 
@@ -318,6 +318,7 @@ uigpt/
 - **Java 17+**
 - **Node.js**（建议 20.19+ 或 22.12+，与 Vite 要求一致）
 - **MySQL 8+**
+- **Redis**（注册/登录限流、JWT 黑名单；默认 `localhost:6379`，可用 `REDIS_HOST` / `REDIS_PORT`；仅当 Redis 启用密码时使用 `SPRING_DATA_REDIS_PASSWORD` 或 `spring.data.redis.password`，无密码时不要设空密码以免触发 AUTH）
 - 可选：**Qdrant**、**腾讯云 COS**、**APIYi / DashScope** 等密钥（见下）
 
 ### 数据库
@@ -329,7 +330,7 @@ uigpt/
 
 ```bash
 cd backend
-# 配置环境变量：至少 UIGPT_JWT_SECRET、DB_*、AI 密钥等，见下文「环境变量」
+# 配置环境变量：至少 UIGPT_JWT_SECRET、DB_*、Redis（默认本机 6379 可不配）、AI 密钥等，见下文「环境变量」
 mvn spring-boot:run
 ```
 
@@ -367,7 +368,7 @@ version=v4.0.4
 |------|-----------|
 | 数据库 | `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USERNAME`、`DB_PASSWORD` 或 `DB_URL` |
 | JWT | `UIGPT_JWT_SECRET`（UTF-8 至少 32 字节） |
-| 对话 LLM | `DASHSCOPE_API_KEY` / `QWEN_API_KEY` / `OPENAI_API_KEY`，`AI_BASE_URL`、`AI_MODEL` |
+| 对话 LLM | 登录用户全局回退：`DASHSCOPE_API_KEY` / `QWEN_API_KEY` / `QIANWEN_API_KEY` / `OPENAI_API_KEY`，`AI_BASE_URL`、`AI_MODEL`；**访客**（未登录）在配置 `QIANWEN_API_KEY` 时走 `uigpt.guest-chat`（默认通义千问兼容地址与 `QIANWEN_MODEL`，可选 `QIANWEN_BASE_URL`） |
 | APIYi 图像 / Nano Banana | `APIYI_API_KEY`、`APIYI_BASE_URL` 等（见 `application.yml` → `uigpt.api-yi-image`） |
 | RAG | `UIGPT_RAG_ENABLED`、`UIGPT_RAG_QDRANT_URL`、`UIGPT_RAG_COLLECTION`、`UIGPT_RAG_EMBEDDING_*` |
 | COS | `COS_SECRET_ID`、`COS_SECRET_KEY`、`COS_REGION`、`COS_BUCKET` |

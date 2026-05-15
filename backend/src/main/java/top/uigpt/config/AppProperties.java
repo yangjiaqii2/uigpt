@@ -12,7 +12,14 @@ public class AppProperties {
     private Jwt jwt = new Jwt();
     private Recaptcha recaptcha = new Recaptcha();
     private RegisterRateLimit registerRateLimit = new RegisterRateLimit();
+    /** 登录失败次数与封锁窗口（Redis） */
+    private LoginRateLimit loginRateLimit = new LoginRateLimit();
     private Ai ai = new Ai();
+    /**
+     * 未登录访客 {@code /api/chat*} 专用：配置 {@code api-key} 后访客直连此处（默认通义千问 OpenAI 兼容），与登录用户的
+     * APIYi 自由对话 / {@code chat_models} 抽池分离。
+     */
+    private GuestChat guestChat = new GuestChat();
     /** 对话是否原样转发上游（不注入记忆/系统提示/技能上下文，不做识图摘要） */
     private Chat chat = new Chat();
     /**
@@ -75,6 +82,16 @@ public class AppProperties {
     }
 
     @Data
+    public static class LoginRateLimit {
+        /** 同一用户名在 failure-window 内允许的最大失败次数，超过则封锁 block-seconds */
+        private int maxFailuresPerWindow = 5;
+        /** 失败计数滑动窗口（秒） */
+        private int failureWindowSeconds = 900;
+        /** 超限后的封锁时长（秒） */
+        private int blockSeconds = 900;
+    }
+
+    @Data
     public static class Chat {
         /**
          * {@code true}：客户端 {@code messages} 不经服务端改写即调用上游；回复仅解析上游 SSE/JSON 中的正文增量。
@@ -90,6 +107,13 @@ public class AppProperties {
         private String model = "qwen-turbo";
         /** 单次模型回复上限（传给上游 max_tokens） */
         private int maxOutputTokens = 2048;
+    }
+
+    @Data
+    public static class GuestChat {
+        private String apiKey = "";
+        private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        private String model = "qwen-turbo";
     }
 
     @Data

@@ -6,6 +6,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import top.uigpt.config.AppProperties;
 import top.uigpt.dto.ForgotPasswordResetRequest;
 import top.uigpt.dto.LoginRequest;
 import top.uigpt.dto.LoginResponse;
@@ -16,6 +17,7 @@ import top.uigpt.repository.UserRepository;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -27,8 +29,10 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final RecaptchaVerificationService recaptchaVerificationService;
-    private final RegisterIpRateLimiter registerIpRateLimiter;
     private final RegisterImageCaptchaService registerImageCaptchaService;
+    private final RegisterRedisRateLimiter registerRedisRateLimiter;
+    private final LoginRedisRateLimiter loginRedisRateLimiter;
+    private final AppProperties appProperties;
 
     @Transactional
     public LoginResponse register(RegisterRequest req, String clientIp) {
@@ -37,13 +41,18 @@ public class AuthService {
         if (!req.getPassword().equals(req.getConfirmPassword())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "两次输入的密码不一致");
         }
-        synchronized (registerIpRateLimiter.sync(clientIp)) {
-            registerIpRateLimiter.checkAllowsOneMoreRegistration(clientIp);
+        String phone = req.getPhone().trim();
+        String member = UUID.randomUUID().toString();
+        AppProperties.RegisterRateLimit rl = appProperties.getRegisterRateLimit();
+        registerRedisRateLimiter.assertAllowsAndRecord(
+                clientIp, phone, member, rl.getMaxPerHour(), rl.getMaxPer24Hours());
+        try {
             if (userRepository.existsByUsername(req.getUsername())) {
+                registerRedisRateLimiter.rollback(clientIp, phone, member);
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "用户名已存在");
             }
-            String phone = req.getPhone().trim();
             if (userRepository.existsByPhone(phone)) {
+                registerRedisRateLimiter.rollback(clientIp, phone, member);
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "该手机号已被注册");
             }
             User u = new User();
@@ -53,22 +62,32 @@ public class AuthService {
             u.setNickname(req.getRealName().trim());
             u.setPasswordHash(passwordEncoder.encode(req.getPassword()));
             userRepository.save(u);
-            registerIpRateLimiter.recordSuccessfulRegistration(clientIp);
             String token = jwtService.createToken(u.getUsername());
             return new LoginResponse(token, u.getUsername());
+        } catch (ResponseStatusException e) {
+            if (e.getStatusCode().value() != HttpStatus.CONFLICT.value()) {
+                registerRedisRateLimiter.rollback(clientIp, phone, member);
+            }
+            throw e;
+        } catch (RuntimeException e) {
+            registerRedisRateLimiter.rollback(clientIp, phone, member);
+            throw e;
         }
     }
 
     public LoginResponse login(LoginRequest req) {
-        User u =
-                userRepository
-                        .findByUsername(req.getUsername())
-                        .orElseThrow(
-                                () ->
-                                        new ResponseStatusException(
-                                                HttpStatus.UNAUTHORIZED, "用户名或密码错误"));
-        if (u.getPasswordHash() == null
+        String un = req.getUsername().strip();
+        AppProperties.LoginRateLimit lr = appProperties.getLoginRateLimit();
+        loginRedisRateLimiter.assertNotBlocked(un);
+        User u = userRepository.findByUsername(req.getUsername()).orElse(null);
+        if (u == null
+                || u.getPasswordHash() == null
                 || !passwordEncoder.matches(req.getPassword(), u.getPasswordHash())) {
+            loginRedisRateLimiter.onLoginFailure(
+                    un,
+                    lr.getMaxFailuresPerWindow(),
+                    lr.getFailureWindowSeconds(),
+                    lr.getBlockSeconds());
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
         }
         if (u.getStatus() != null && u.getStatus() == 0) {
@@ -77,6 +96,7 @@ public class AuthService {
         if (u.getStatus() != null && u.getStatus() == 2) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "账号待审核，暂无法登录");
         }
+        loginRedisRateLimiter.onLoginSuccess(un);
         return new LoginResponse(jwtService.createToken(u.getUsername()), u.getUsername());
     }
 

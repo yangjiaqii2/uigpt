@@ -6,7 +6,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -29,7 +28,7 @@ import top.uigpt.service.ApiYiImageService;
 import top.uigpt.service.ApiYiImageService.NanoBananaInlineImage;
 import top.uigpt.service.ConversationImageService;
 import top.uigpt.service.ImageStudioSessionService;
-import top.uigpt.service.JwtService;
+import top.uigpt.security.SecurityUtils;
 import top.uigpt.service.ObjectStorageService;
 import top.uigpt.service.PointsService;
 import top.uigpt.service.RagService;
@@ -55,7 +54,6 @@ public class ImageStudioController {
 
     private static final int MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
 
-    private final JwtService jwtService;
     private final UserRepository userRepository;
     private final PointsService pointsService;
     private final ApiYiImageService apiYiImageService;
@@ -68,9 +66,8 @@ public class ImageStudioController {
 
     @PostMapping("/nano-banana/text-to-image")
     public ImageStudioGenerateResponse nanoBananaTextToImage(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ImageStudioTextRequest body) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         ensureCosForPersist();
         User user =
                 userRepository
@@ -102,9 +99,8 @@ public class ImageStudioController {
      */
     @PostMapping("/nano-banana/text-to-image-pair")
     public ImageStudioPairResponse nanoBananaTextToImagePair(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ImageStudioTextRequest body) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         ensureCosForPersist();
         User user =
                 userRepository
@@ -140,9 +136,8 @@ public class ImageStudioController {
 
     @PostMapping("/nano-banana/edit")
     public ImageStudioGenerateResponse nanoBananaEdit(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ImageStudioEditRequest body) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         ensureCosForPersist();
         User user =
                 userRepository
@@ -173,9 +168,8 @@ public class ImageStudioController {
      */
     @PostMapping("/nano-banana/edit-pair")
     public ImageStudioPairResponse nanoBananaEditPair(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ImageStudioEditRequest body) {
-        String username = requireUser(authorization);
+        String username = requireUser();
         ensureCosForPersist();
         User user =
                 userRepository
@@ -356,9 +350,8 @@ public class ImageStudioController {
     /** 调用 LLM 将简短描述扩写为更适合 Banana/Gemini 的提示词 */
     @PostMapping("/prompt/optimize")
     public ImageStudioPromptOptimizeResponse optimizePrompt(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody ImageStudioPromptOptimizeRequest body) {
-        requireUser(authorization);
+        requireUser();
         String q = body.getPrompt() == null ? "" : body.getPrompt().strip();
         String forLlm = ragService.augmentPromptForImage(q, q, Boolean.TRUE, body.getRagCollection());
         String optimized =
@@ -372,8 +365,8 @@ public class ImageStudioController {
         return new ImageStudioPromptOptimizeResponse(optimized);
     }
 
-    private String requireUser(String authorization) {
-        String username = jwtService.parseUsername(authorization);
+    private String requireUser() {
+        String username = SecurityUtils.currentUsernameOrNull();
         if (username == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录");
         }

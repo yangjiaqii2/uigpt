@@ -47,6 +47,11 @@ export function fetchMe() {
   return http.get('/me')
 }
 
+/** 服务端将当前 Token 写入 Redis 黑名单；登出后应再清空本地存储。 */
+export function logout() {
+  return http.post('/logout')
+}
+
 /** @param {{ oldPassword: string, newPassword: string }} body */
 export function changePassword(body) {
   return http.put('/me/password', body)

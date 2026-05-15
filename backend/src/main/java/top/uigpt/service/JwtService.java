@@ -7,10 +7,12 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import top.uigpt.config.AppProperties;
+import top.uigpt.security.JwtUser;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -39,21 +41,47 @@ public class JwtService {
                 .compact();
     }
 
-    public String parseUsername(String bearerToken) {
-        if (bearerToken == null || !bearerToken.startsWith("Bearer ")) {
-            return null;
+    /** 解析 Authorization Bearer；验签失败返回 empty。 */
+    public Optional<JwtUser> parseBearer(String authorizationHeader) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
+            return Optional.empty();
         }
-        String token = bearerToken.substring(7);
+        return parseRawToken(authorizationHeader.substring(7).trim());
+    }
+
+    public Optional<JwtUser> parseRawToken(String token) {
+        if (token == null || token.isEmpty()) {
+            return Optional.empty();
+        }
         try {
-            Claims claims = Jwts.parser()
-                    .verifyWith(signingKey())
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
-            return claims.getSubject();
+            Claims claims =
+                    Jwts.parser()
+                            .verifyWith(signingKey())
+                            .build()
+                            .parseSignedClaims(token)
+                            .getPayload();
+            Date exp = claims.getExpiration();
+            long expMs = exp != null ? exp.getTime() : System.currentTimeMillis();
+            String subject = claims.getSubject();
+            if (subject == null || subject.isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(new JwtUser(subject.strip(), expMs, token));
         } catch (Exception e) {
-            return null;
+            return Optional.empty();
         }
+    }
+
+    public String parseUsername(String bearerToken) {
+        return parseBearer(bearerToken).map(JwtUser::username).orElse(null);
+    }
+
+    /** 黑名单 TTL：剩余有效期（秒），至少 1，至多 jwt 配置的全局过期秒数 */
+    public long blacklistTtlSeconds(JwtUser jwt) {
+        long remainMs = jwt.expiresAtMillis() - System.currentTimeMillis();
+        long sec = Math.max(1L, (remainMs + 999) / 1000);
+        long cap = Math.max(1L, (appProperties.getJwt().getExpirationMs() + 999) / 1000);
+        return Math.min(sec, cap);
     }
 
     private SecretKey signingKey() {

@@ -6,7 +6,7 @@ Spring Boot 3.3，JDK 17，Maven。主类：`top.uigpt.UigptApplication`。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/register/captcha` | 图形验证码，`{ captchaId, imageBase64 }`（PNG Base64） |
+| GET | `/api/register/captcha` | 算式验证码（两数加法 PNG），`{ captchaId, imageBase64 }`（Base64） |
 | GET | `/api/register/options` | 注册页选项（如是否启用 reCAPTCHA、站点密钥） |
 | POST | `/api/register` | 注册：`realName`、`phone`、`username`、`password`、`confirmPassword`、`captchaId`、`captchaCode`、可选 `recaptchaToken`；按 IP 限流 |
 | POST | `/api/login` | 登录 |

@@ -10,6 +10,8 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -89,6 +91,28 @@ public class GlobalExceptionHandler {
         }
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(new ApiError(UserFacingMessages.NETWORK_TRY_LATER));
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<?> handleAuthentication(AuthenticationException ex, HttpServletRequest req) {
+        String msg = "未登录或令牌无效";
+        if (prefersStreamChatError(req)) {
+            return ResponseEntity.ok()
+                    .contentType(new MediaType("text", "event-stream", StandardCharsets.UTF_8))
+                    .body(sseErrorEvent(msg));
+        }
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new ApiError(msg));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<?> handleAccessDenied(AccessDeniedException ex, HttpServletRequest req) {
+        String msg = "禁止访问";
+        if (prefersStreamChatError(req)) {
+            return ResponseEntity.ok()
+                    .contentType(new MediaType("text", "event-stream", StandardCharsets.UTF_8))
+                    .body(sseErrorEvent(msg));
+        }
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(msg));
     }
 
     private boolean prefersStreamChatError(HttpServletRequest req) {

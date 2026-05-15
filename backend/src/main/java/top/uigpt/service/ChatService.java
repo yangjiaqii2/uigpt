@@ -188,6 +188,21 @@ public class ChatService {
     }
 
     private ResolvedModelCall resolveModelForChat(ChatRequest req, String username) {
+        if (username == null || username.isBlank()) {
+            var g = appProperties.getGuestChat();
+            String gk = g.getApiKey();
+            if (gk != null && !gk.isBlank()) {
+                String model =
+                        g.getModel() != null && !g.getModel().isBlank()
+                                ? g.getModel().strip()
+                                : appProperties.getAi().getModel().strip();
+                String base =
+                        g.getBaseUrl() != null && !g.getBaseUrl().isBlank()
+                                ? g.getBaseUrl().strip().replaceAll("/+$", "")
+                                : appProperties.getAi().getBaseUrl().strip().replaceAll("/+$", "");
+                return new ResolvedModelCall(model, gk.strip(), base);
+            }
+        }
         return tryResolveFastFreeform(req, username).orElseGet(this::resolveUpstreamModel);
     }
 

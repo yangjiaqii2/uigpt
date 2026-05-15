@@ -8,7 +8,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -17,8 +16,8 @@ import top.uigpt.dto.ConversationImageResponse;
 import top.uigpt.dto.ImageFavoriteRequest;
 import top.uigpt.dto.RecentImageResponse;
 import top.uigpt.dto.UserStatsResponse;
+import top.uigpt.security.SecurityUtils;
 import top.uigpt.service.ConversationImageService;
-import top.uigpt.service.JwtService;
 import top.uigpt.service.MeProfileService;
 
 import java.util.List;
@@ -28,23 +27,17 @@ import java.util.List;
 @RequiredArgsConstructor
 public class MeController {
 
-    private final JwtService jwtService;
     private final MeProfileService meProfileService;
     private final ConversationImageService conversationImageService;
 
     @GetMapping("/me/stats")
-    public UserStatsResponse meStats(
-            @RequestHeader(value = "Authorization", required = false) String authorization) {
-        String username = requireUser(authorization);
-        return meProfileService.stats(username);
+    public UserStatsResponse meStats() {
+        return meProfileService.stats(requireUser());
     }
 
     @GetMapping("/me/recent-images")
-    public List<RecentImageResponse> meRecentImages(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @RequestParam(defaultValue = "8") int limit) {
-        String username = requireUser(authorization);
-        return meProfileService.recentImages(username, limit);
+    public List<RecentImageResponse> meRecentImages(@RequestParam(defaultValue = "8") int limit) {
+        return meProfileService.recentImages(requireUser(), limit);
     }
 
     /**
@@ -52,12 +45,10 @@ public class MeController {
      */
     @GetMapping("/me/images")
     public List<RecentImageResponse> meImages(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "48") int size,
             @RequestParam(required = false) String skill) {
-        String username = requireUser(authorization);
-        return meProfileService.myImagesPage(username, page, size, skill);
+        return meProfileService.myImagesPage(requireUser(), page, size, skill);
     }
 
     /**
@@ -65,10 +56,8 @@ public class MeController {
      */
     @PatchMapping("/me/images/{imageId}/favorite")
     public ResponseEntity<ConversationImageResponse> patchMyImageFavorite(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("imageId") Long imageId,
-            @RequestBody ImageFavoriteRequest body) {
-        String username = requireUser(authorization);
+            @PathVariable("imageId") Long imageId, @RequestBody ImageFavoriteRequest body) {
+        String username = requireUser();
         boolean fav = body != null && body.isFavorite();
         ConversationImageResponse res =
                 conversationImageService.setFavoriteForOwner(username, imageId, fav);
@@ -80,16 +69,13 @@ public class MeController {
 
     /** 删除当前用户名下的一张生成图（COS 与库记录）。 */
     @DeleteMapping("/me/images/{imageId}")
-    public ResponseEntity<Void> deleteMyImage(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("imageId") Long imageId) {
-        String username = requireUser(authorization);
-        conversationImageService.deleteImageForOwner(username, imageId);
+    public ResponseEntity<Void> deleteMyImage(@PathVariable("imageId") Long imageId) {
+        conversationImageService.deleteImageForOwner(requireUser(), imageId);
         return ResponseEntity.noContent().build();
     }
 
-    private String requireUser(String authorization) {
-        String username = jwtService.parseUsername(authorization);
+    private String requireUser() {
+        String username = SecurityUtils.currentUsernameOrNull();
         if (username == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或令牌无效");
         }

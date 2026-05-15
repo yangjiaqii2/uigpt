@@ -2,7 +2,7 @@
 
 1. 安装 JDK 17、Maven、Node.js 18+、MySQL 8+。
 2. 执行 `docs/schema-mysql.sql` 创建数据库与**全部业务表**（含知识库、图片工作台会话、站内信等；勿再执行已移除的 `backend/src/main/resources/db/*.mysql.sql` 拆脚本）。
-3. 配置后端环境变量：`DB_PORT`、`DB_NAME`、`DB_USERNAME`、`DB_PASSWORD`（及可选 `DB_HOST`）、`UIGPT_JWT_SECRET`、对话密钥（如 `DASHSCOPE_API_KEY`）等；`backend/config/uigpt-local.yml` 勿写入数据库密码（见根目录 `README.md`）。
+3. 配置后端环境变量：`DB_PORT`、`DB_NAME`、`DB_USERNAME`、`DB_PASSWORD`（及可选 `DB_HOST`）、`UIGPT_JWT_SECRET`、对话密钥（如 `DASHSCOPE_API_KEY`；访客未登录对话可单独配置 `QIANWEN_API_KEY`，见 `application.yml` 的 `uigpt.guest-chat`）等；`backend/config/uigpt-local.yml` 勿写入数据库密码（见根目录 `README.md`）。
 4. 启动 `backend` 与 `frontend`；开发时前端通过 Vite 将 `/api` 代理到 `http://localhost:8088`。
 
 生产构建：`cd frontend && npm run build`，部署 `frontend/dist` 并反向代理 `/api` 到后端。

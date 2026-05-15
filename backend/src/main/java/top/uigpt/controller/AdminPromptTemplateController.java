@@ -9,7 +9,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -17,7 +16,7 @@ import top.uigpt.dto.PromptTemplateResponse;
 import top.uigpt.dto.PromptTemplateWriteRequest;
 import top.uigpt.model.UserPrivilege;
 import top.uigpt.repository.UserRepository;
-import top.uigpt.service.JwtService;
+import top.uigpt.security.SecurityUtils;
 import top.uigpt.service.PromptTemplateService;
 
 /**
@@ -31,15 +30,12 @@ import top.uigpt.service.PromptTemplateService;
 @RequiredArgsConstructor
 public class AdminPromptTemplateController {
 
-    private final JwtService jwtService;
     private final UserRepository userRepository;
     private final PromptTemplateService promptTemplateService;
 
     @PostMapping
-    public ResponseEntity<PromptTemplateResponse> create(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @Valid @RequestBody PromptTemplateWriteRequest body) {
-        String username = requireUser(authorization);
+    public ResponseEntity<PromptTemplateResponse> create(@Valid @RequestBody PromptTemplateWriteRequest body) {
+        String username = requireUser();
         requireDbSuperAdmin(username);
         PromptTemplateResponse res = promptTemplateService.create(body);
         return ResponseEntity.status(HttpStatus.CREATED).body(res);
@@ -47,26 +43,22 @@ public class AdminPromptTemplateController {
 
     @PutMapping("/{id}")
     public PromptTemplateResponse update(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("id") long id,
-            @Valid @RequestBody PromptTemplateWriteRequest body) {
-        String username = requireUser(authorization);
+            @PathVariable("id") long id, @Valid @RequestBody PromptTemplateWriteRequest body) {
+        String username = requireUser();
         requireDbSuperAdmin(username);
         return promptTemplateService.update(id, body);
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable("id") long id) {
-        String username = requireUser(authorization);
+    public ResponseEntity<Void> delete(@PathVariable("id") long id) {
+        String username = requireUser();
         requireDbSuperAdmin(username);
         promptTemplateService.delete(id);
         return ResponseEntity.noContent().build();
     }
 
-    private String requireUser(String authorization) {
-        String username = jwtService.parseUsername(authorization);
+    private String requireUser() {
+        String username = SecurityUtils.currentUsernameOrNull();
         if (username == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或令牌无效");
         }

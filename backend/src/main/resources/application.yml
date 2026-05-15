@@ -44,16 +44,26 @@ uigpt:
   register-rate-limit:
     max-per-hour: ${UIGPT_REGISTER_MAX_PER_HOUR:2}
     max-per-24-hours: ${UIGPT_REGISTER_MAX_PER_24H:3}
+  # 登录失败防暴力：同一用户名在窗口内失败次数上限，超限封锁一段时间（秒）
+  login-rate-limit:
+    max-failures-per-window: ${UIGPT_LOGIN_MAX_FAILURES:5}
+    failure-window-seconds: ${UIGPT_LOGIN_FAIL_WINDOW_SEC:900}
+    block-seconds: ${UIGPT_LOGIN_BLOCK_SEC:900}
   # 解密 chat_models.api_key_cipher；表 chat_models.base_url 可指向 API易等网关（须含 /v1）以实现与 DashScope 混池
   model-key-master-secret: ${UIGPT_MODEL_KEY_MASTER:}
   ai:
-    # 密钥仅从环境变量注入（勿提交仓库）。通义千问：DASHSCOPE_API_KEY 或 QWEN_API_KEY；亦兼容 OPENAI_API_KEY
-    api-key: ${DASHSCOPE_API_KEY:${QWEN_API_KEY:${OPENAI_API_KEY:}}}
+    # 密钥仅从环境变量注入（勿提交仓库）。通义千问：DASHSCOPE_API_KEY / QWEN_API_KEY / QIANWEN_API_KEY；亦兼容 OPENAI_API_KEY
+    api-key: ${DASHSCOPE_API_KEY:${QWEN_API_KEY:${QIANWEN_API_KEY:${OPENAI_API_KEY:}}}}
     # 通义千问 OpenAI 兼容模式；使用 OpenAI 时改为 https://api.openai.com/v1
     base-url: ${AI_BASE_URL:${OPENAI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
     model: ${AI_MODEL:${OPENAI_MODEL:qwen-turbo}}
     # 单次助手回复长度上限（max_tokens）
     max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:2048}
+  # 仅当 api-key 非空：未登录访客 /api/chat* 使用该密钥与地址/模型，不再走 APIYi 自由对话或 chat_models 抽池
+  guest-chat:
+    api-key: ${QIANWEN_API_KEY:}
+    base-url: ${QIANWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    model: ${QIANWEN_MODEL:qwen-turbo}
   # APIYi OpenAI 兼容网关（自由对话默认经此转发；密钥 APIYI_API_KEY）。APIYI_IMAGE_ENABLED 保留兼容，业务就绪以 api-key 为准
   api-yi-image:
     enabled: ${APIYI_IMAGE_ENABLED:false}
@@ -134,6 +144,13 @@ uigpt:
     presigned-url-expiry-seconds: ${COS_PRESIGNED_URL_EXPIRY_SECONDS:86400}
 
 spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # 无密码的 Redis 不要写 password 键（空串也会触发 AUTH 导致 ERR AUTH）。
+      # 需要密码时：环境变量 SPRING_DATA_REDIS_PASSWORD，或见 config/uigpt-local.yml.example
+      timeout: 3s
   servlet:
     multipart:
       max-file-size: 25MB

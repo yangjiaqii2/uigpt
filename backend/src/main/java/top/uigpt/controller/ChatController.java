@@ -9,7 +9,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -26,7 +25,7 @@ import top.uigpt.entity.User;
 import top.uigpt.repository.UserRepository;
 import top.uigpt.service.ChatService;
 import top.uigpt.service.ConversationService;
-import top.uigpt.service.JwtService;
+import top.uigpt.security.SecurityUtils;
 import top.uigpt.service.PointsService;
 
 import org.springframework.dao.DataAccessException;
@@ -45,7 +44,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ChatController {
 
     private final ChatService chatService;
-    private final JwtService jwtService;
     private final ConversationService conversationService;
     private final AppProperties appProperties;
     private final UserRepository userRepository;
@@ -55,10 +53,8 @@ public class ChatController {
     private final Executor sseChatForwardExecutor;
 
     @PostMapping("/chat")
-    public ChatResponse chat(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @Valid @RequestBody ChatRequest request) {
-        String username = jwtService.parseUsername(authorization);
+    public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
+        String username = SecurityUtils.currentUsernameOrNull();
         validateGuestAndConversation(username, request);
 
         ChatRequest forModel =
@@ -98,10 +94,8 @@ public class ChatController {
      * {@code {"delta":"片段"}} 正文增量；{@code {"done":true,"conversationId":n|null}} 结束；{@code {"error":"…"}} 失败。
      */
     @PostMapping("/chat/stream")
-    public ResponseEntity<ResponseBodyEmitter> streamChat(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @Valid @RequestBody ChatRequest request) {
-        String username = jwtService.parseUsername(authorization);
+    public ResponseEntity<ResponseBodyEmitter> streamChat(@Valid @RequestBody ChatRequest request) {
+        String username = SecurityUtils.currentUsernameOrNull();
         validateGuestAndConversation(username, request);
 
         final Long streamUserId = username != null ? userIdOrThrow(username) : null;
