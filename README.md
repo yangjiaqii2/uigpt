@@ -2,6 +2,8 @@
 
 # UIGPT
 
+**线上地址**：[http://uigpt.top/](http://uigpt.top/)
+
 **一句话**：全栈 AI 应用——**多模态对话**（流式 SSE、访客/登录、积分）+ **图片工作台**（Nano Banana / **Gemini `generateContent`** 文生图与编辑）+ **可选 RAG 知识库**（Qdrant + Embedding）+ **腾讯云 COS** 落图。
 
 **亮点**（≤3）
@@ -14,23 +16,15 @@
 
 ---
 
-## 功能演示（截图 / 视频）
+## 功能演示（截图）
 
-资源位于仓库 [`docs/`](docs/) 目录。
-
-### 图片工作台 · 文生图
-
-- **演示视频**：[打开 `docs/demo.mp4`](docs/demo.mp4)（图片生成功能录屏；本地或 Raw 链接用播放器观看）。
-- 在支持 HTML 的预览环境中也可内嵌播放：
-
-<video src="docs/demo.mp4" controls width="100%" style="max-width: 720px"></video>
-
-### 各模块界面截图
-
-文件名与前端模块对应。
+**体验地址**：[http://uigpt.top/](http://uigpt.top/) · 下方截图为仓库 [`docs/`](docs/) 目录资源，文件名与界面模块对应。
 
 | 模块 | 截图 |
 |------|------|
+| 多模态对话 | ![多模态对话](docs/多模态对话.png) |
+| 图片创作（图片工作台 / 文生图与编辑） | ![图片创作](docs/图片创作.png) |
+| 提示词（模板等） | ![提示词](docs/提示词.png) |
 | 登录 | ![登录](docs/登录.png) |
 | 注册 | ![注册](docs/注册.png) |
 | 技能广场 | ![技能广场](docs/技能广场.png) |
