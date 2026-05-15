@@ -431,7 +431,7 @@ location /api/ {
 - **Could not resolve placeholder**：必填 `DB_*` 或数据源相关未配置。
 - **对话 503**：未配置任一对话 API Key。
 - **图片工作台列不存在 / 表不存在**：新库请重新执行完整 **`docs/schema-mysql.sql`**；旧库执行 **`docs/migrate-incremental-columns.sql`** 或按实体手工 `ALTER`。
-- **无法连接 Redis / Redisson 启动失败**：容器内 `localhost:6379` 指向容器自身，不是宿主机。Compose 部署使用本仓库 `docker/docker-compose.server.yml` 时会起 `redis` 并默认 `REDIS_HOST=redis`；单独 `docker run` 或 K8s 须设置 `REDIS_HOST`（及端口、密码）指向真实 Redis 地址。
+- **无法连接 Redis / Redisson 启动失败**：容器内 `localhost:6379` 指向容器自身，不是宿主机。Compose 部署使用本仓库 `docker/docker-compose.server.yml` 时会起 `redis` 并默认 `REDIS_HOST=redis`；单独 `docker run` 或 K8s 须设置 `REDIS_HOST`（及端口、密码）指向真实 Redis 地址。**自行起的 Redis 容器名若不是 `redis`，须在 `server.env` 写 `REDIS_HOST=<docker ps 里的 NAMES>`，且该容器与 `uigpt-backend` 在同一 Docker 网络（否则 `docker network connect <网络名> <redis容器名>`）。**
 
 ---
 
