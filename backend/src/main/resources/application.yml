@@ -64,6 +64,8 @@ uigpt:
     api-key: ${QIANWEN_API_KEY:}
     base-url: ${QIANWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
     model: ${QIANWEN_MODEL:qwen-turbo}
+    # 访客千问「系统介绍」首条 system；留空用代码内置。整段覆盖可配 UIGPT_GUEST_CHAT_SYSTEM_INTRO 或 uigpt-local.yml 多行
+    system-intro: ${UIGPT_GUEST_CHAT_SYSTEM_INTRO:}
   # APIYi OpenAI 兼容网关（自由对话默认经此转发；密钥 APIYI_API_KEY）。APIYI_IMAGE_ENABLED 保留兼容，业务就绪以 api-key 为准
   api-yi-image:
     enabled: ${APIYI_IMAGE_ENABLED:false}

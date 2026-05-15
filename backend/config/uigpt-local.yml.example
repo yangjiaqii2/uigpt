@@ -23,4 +23,4 @@ uigpt:
   #   max-per-hour: 2
   #   max-per-24-hours: 3
   # 通义千问密钥请用环境变量 DASHSCOPE_API_KEY（或 QWEN_API_KEY / QIANWEN_API_KEY 等，见 application.yml）
-  # 访客未登录对话：配置 QIANWEN_API_KEY 时走 uigpt.guest-chat（默认 qwen-turbo + DashScope 兼容地址）
+  # 访客未登录对话：配置 QIANWEN_API_KEY 时走 uigpt.guest-chat（默认 qwen-turbo + DashScope 兼容地址）；产品说明可配 guest-chat.system-intro（多行）

@@ -114,6 +114,11 @@ public class AppProperties {
         private String apiKey = "";
         private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
         private String model = "qwen-turbo";
+        /**
+         * 访客走千问时在首条 {@code system} 注入的产品说明；留空则 {@link top.uigpt.service.ChatService} 使用内置默认
+         * 文案。可写多行（见 {@code application.yml} 或 {@code config/uigpt-local.yml}）。
+         */
+        private String systemIntro = "";
     }
 
     @Data

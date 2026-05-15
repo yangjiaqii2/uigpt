@@ -74,6 +74,16 @@ public class ChatService {
     /** 自由对话技能系统提示 */
     private static final String FREEFORM_SKILL_SYSTEM_PROMPT = FreeformPromptLoader.loadText();
 
+    /**
+     * 访客经 {@code uigpt.guest-chat} 调千问时注入的产品说明（可被 {@code uigpt.guest-chat.system-intro} 整段覆盖）。
+     */
+    private static final String DEFAULT_GUEST_PRODUCT_SYSTEM_INTRO =
+            "【系统说明】你正在为产品「UIGPT」的未登录访客提供对话服务。UIGPT 是一款全栈 AI 应用：支持多模态对话（含流式"
+                    + " SSE）、登录后可使用会话持久化与积分等能力；另有图片工作台等扩展能力；可选接入基于向量检索的知识库（RAG）与对象"
+                    + "存储等组件。当前入口为访客体验渠道。\n"
+                    + "当用户询问「这是什么系统」「能做什么」「和谁有关」等元问题时，请仅依据以上定位与能力范围作答，不要编造未提及"
+                    + "的功能；涉及账号、计费、隐私政策等你无法从上下文确认的细节，请如实说明并建议用户查看官方说明或登录后查阅。";
+
     private static final int SESSION_MEMORY_MAX_OUT = 2000;
 
     private static final String MEMORY_MERGE_SYSTEM =
@@ -111,7 +121,12 @@ public class ChatService {
         this.upstreamChatWebClient = upstreamChatWebClient;
     }
 
-    private record ResolvedModelCall(String apiModelCode, String bearerApiKey, String baseUrl) {}
+    /**
+     * @param guestProductIntro 为 true 表示未登录访客走 {@code uigpt.guest-chat} 千问，需在发往上游的 messages 中合并产品
+     *     说明 system。
+     */
+    private record ResolvedModelCall(
+            String apiModelCode, String bearerApiKey, String baseUrl, boolean guestProductIntro) {}
 
     /**
      * 每次请求从已启用 {@code chat_models} 中随机选一条；若无记录则用全局配置的 model 与 Key。
@@ -121,7 +136,7 @@ public class ChatService {
         String fallbackModel = appProperties.getAi().getModel();
         List<ChatModel> enabled = chatModelRepository.findByEnabledTrueOrderBySortOrderAscIdAsc();
         if (enabled.isEmpty()) {
-            return new ResolvedModelCall(fallbackModel, fallbackKey, null);
+            return new ResolvedModelCall(fallbackModel, fallbackKey, null, false);
         }
         ChatModel row = enabled.get(ThreadLocalRandom.current().nextInt(enabled.size()));
         return resolveFromChatModelRow(row, fallbackKey);
@@ -151,7 +166,7 @@ public class ChatService {
         } else {
             bu = null;
         }
-        return new ResolvedModelCall(code, key, bu);
+        return new ResolvedModelCall(code, key, bu, false);
     }
 
     /**
@@ -184,7 +199,7 @@ public class ChatService {
         if (!root.endsWith("/v1")) {
             root = root + "/v1";
         }
-        return Optional.of(new ResolvedModelCall(mid, key, root));
+        return Optional.of(new ResolvedModelCall(mid, key, root, false));
     }
 
     private ResolvedModelCall resolveModelForChat(ChatRequest req, String username) {
@@ -200,7 +215,7 @@ public class ChatService {
                         g.getBaseUrl() != null && !g.getBaseUrl().isBlank()
                                 ? g.getBaseUrl().strip().replaceAll("/+$", "")
                                 : appProperties.getAi().getBaseUrl().strip().replaceAll("/+$", "");
-                return new ResolvedModelCall(model, gk.strip(), base);
+                return new ResolvedModelCall(model, gk.strip(), base, true);
             }
         }
         return tryResolveFastFreeform(req, username).orElseGet(this::resolveUpstreamModel);
@@ -382,6 +397,61 @@ public class ChatService {
         return out;
     }
 
+    private String guestProductIntroText() {
+        String configured = appProperties.getGuestChat().getSystemIntro();
+        if (configured != null && !configured.isBlank()) {
+            return configured.strip();
+        }
+        return DEFAULT_GUEST_PRODUCT_SYSTEM_INTRO;
+    }
+
+    /**
+     * 访客千问：在发往 DashScope 的 messages 中合并产品说明；透传模式下在列表首插入一条 {@code system}，非透传则并入
+     * 已有首条 {@code system}（与 {@link #withZhReplySystemPrompt} 一致）。
+     */
+    private List<ChatMessageDto> mergeGuestProductIntro(
+            List<ChatMessageDto> messages, boolean guestProductIntro, boolean passthrough) {
+        if (!guestProductIntro) {
+            return messages;
+        }
+        String intro = guestProductIntroText();
+        if (intro == null || intro.isBlank()) {
+            return messages;
+        }
+        if (messages == null || messages.isEmpty()) {
+            ChatMessageDto sys = new ChatMessageDto();
+            sys.setRole("system");
+            sys.setContent(intro);
+            return List.of(sys);
+        }
+        if (passthrough) {
+            List<ChatMessageDto> out = new ArrayList<>(messages.size() + 1);
+            ChatMessageDto sys = new ChatMessageDto();
+            sys.setRole("system");
+            sys.setContent(intro);
+            out.add(sys);
+            out.addAll(messages);
+            return out;
+        }
+        ChatMessageDto first = messages.get(0);
+        if (first.getRole() != null && "system".equalsIgnoreCase(first.getRole())) {
+            List<ChatMessageDto> out = new ArrayList<>(messages);
+            ChatMessageDto merged = new ChatMessageDto();
+            merged.setRole("system");
+            String rest = first.getContent() != null ? first.getContent() : "";
+            merged.setContent(intro + "\n\n" + rest);
+            out.set(0, merged);
+            return out;
+        }
+        List<ChatMessageDto> out = new ArrayList<>(messages.size() + 1);
+        ChatMessageDto sys = new ChatMessageDto();
+        sys.setRole("system");
+        sys.setContent(intro);
+        out.add(sys);
+        out.addAll(messages);
+        return out;
+    }
+
     /**
      * 流式对话：在发起上游 HTTP 前完成鉴权侧所需的一切解析（由 Controller 先扣积分 / 注入记忆后调用）。
      *
@@ -406,6 +476,8 @@ public class ChatService {
                 passthrough
                         ? req.getMessages()
                         : withZhReplySystemPrompt(req.getMessages(), req.getSkillContext());
+        messagesForUpstream =
+                mergeGuestProductIntro(messagesForUpstream, rm.guestProductIntro(), passthrough);
         boolean embedVision =
                 passthrough
                         ? messageThreadHasVisionImages(req.getMessages())
@@ -842,6 +914,7 @@ public class ChatService {
                 passthrough
                         ? req.getMessages()
                         : withZhReplySystemPrompt(req.getMessages(), req.getSkillContext());
+        messages = mergeGuestProductIntro(messages, rm.guestProductIntro(), passthrough);
         boolean embedVision =
                 passthrough
                         ? messageThreadHasVisionImages(req.getMessages())
