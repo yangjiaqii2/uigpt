@@ -4,6 +4,12 @@ globs: []
 alwaysApply: false
 ---
 
+## 执行约束
+
+**严禁自动提交。** 只有在用户明确发出提交指令（如"提交代码"、"git commit"、"push"等）时，才能执行 git add / commit / push 操作。代码发生变更后，绝不允许自动执行任何 Git 提交或推送。
+
+## Commit Message 规范
+
 When generating commit messages:
 
 - Use Conventional Commits format: type(scope): description
